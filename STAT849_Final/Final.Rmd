@@ -1,7 +1,7 @@
 ---
 title: "Final Project, STAT 849"
 author: "Yunyi SHEN"
-date: "12/01/2019"
+date: "12/13/2019"
 header-includes:
    - \usepackage{amsmath}
    - \usepackage{amsthm}
@@ -346,7 +346,7 @@ Thus it make sense to select one out of the each class for predicting but not fo
 
 ### Investigation of Points with Large Residuals
 
-Three points had large residuals in the least AIC model (Fig.2 in Appendix), point 3,4,and 5. They are all Shisky with proof of 80, 86 and 90 respectively. All residuals are positive (2.241,2.45,2.57, while residual standard deviation was estimated as 0.2488). Since they are all ethanol rich drinks, one possible explanation is because we did not measure ethanol level in these drinks. Bomb calorimetry was widely used in measuring food calories (e.g. Acheson, et al. 1980). In this method, people combust the food in a chamber, with water cover around the chamber then measure the temperature change of the water to obtain the energy of combustion. Ethanol can be combusted and contains large amount of energy (with combustion enthalpy -1370.7 kJ/mol = 7.12 KCal/g). From here we can calculate the calories from ethanol, for 80-PROOF, the amount of ethonal can be estimated from the remaining mass after taking out water, which is $42\times(1-0.67)=13.86g$, the energy from ethanol is given by $13.86\times7.12=98.7KCal$ and then the residuals for calorie densities are 0.0088,0.0638 and 0.0875 respectively, which is lower than the residual predicted by the model. This may explain the residual of point 3 to 5. Detailed knowledge about the experimental design underlying this data set is necessary for further understanding of these large residuals.
+Three points had large residuals in the least AIC model (Fig.2 in Appendix), point 3,4,and 5. They are all Shisky with proof of 80, 86 and 90 respectively. All residuals are positive (2.241,2.45,2.57, while residual standard deviation was estimated as 0.2488). Since they are all ethanol rich drinks, one possible explanation is because we did not measure ethanol level in these drinks. Bomb calorimetry was widely used in measuring food calories (e.g. Acheson, et al. 1980). In this method, people combust the food in a chamber, with water cover around the chamber then measure the temperature change of the water to obtain the energy of combustion. Ethanol can be combusted and contains some amount of energy (with combustion enthalpy -1370.7 kJ/mol = 7.12 KCal/g). From here we can calculate the calories from ethanol, for 80-PROOF, the amount of ethonal can be estimated from the remaining mass after taking out water, which is $42\times(1-0.67)=13.86g$, the energy from ethanol is given by $13.86\times7.12=98.7KCal$ and then the residuals for calorie densities are 0.0088,0.0638 and 0.0875 respectively, which is lower than the residual predicted by the model. This may explain the residual of point 3 to 5. Detailed knowledge about the experimental design underlying this data set is necessary for further understanding of these large residuals. Since it was not considered as outliers due to Cook's distance, I will not remove them before obtaining further information about how the experiment was conducted. 
 
 
 ### Major Calorie Bearing Nutrients
@@ -702,7 +702,7 @@ Prediction power of this least AIC model was also estimated using ROC-AUC method
 n_boot = 500
 ```
 
-```{r boot CI of threshold F-test,echo=FALSE, warning=FALSE,message=FALSE,error=FALSE, fig.height=3, fig.width=5.5}
+```{r boot CI of threshold F-test,echo=FALSE,results="hide", warning=FALSE,message=FALSE,error=FALSE, fig.height=3, fig.width=5.5}
 cl <- snow::makeSOCKcluster(7)
 snow::clusterEvalQ(cl,library("lme4"))
 snow::clusterExport(cl, c("getthr","min_SL_carrier_glmm","n_boot"), envir = .GlobalEnv)
@@ -736,7 +736,7 @@ plotdata_minimumSL$Frequency = factor(plotdata_minimumSL$Frequency,levels = c("l
 
 ```
 
-```{r boot CI of threshold Rayleigh-test,echo=FALSE, warning=FALSE,message=FALSE,error=FALSE, fig.height=3, fig.width=5.5}
+```{r boot CI of threshold Rayleigh-test,echo=FALSE,results="hide", warning=FALSE,message=FALSE,error=FALSE, fig.height=3, fig.width=5.5}
 
 snow::clusterExport(cl, c("getthr","R_min_SL_carrier_glmm","n_boot"), envir = .GlobalEnv)
 
@@ -1171,10 +1171,19 @@ I used bootstrap for confidence interval and cross validation to make and evalua
 One of the key assumption in the third part of the analysis was different individual's results were independent. This assumption could be violated if all the experiments were done using the same equipment for a given carrier/frequency. This assumption should be assessed based on the experimental design and repeat from other labs. 
 
 
+
+
 \setcounter{figure}{0}
 \setcounter{table}{0}
 
 ## End of the Main Report
+
+### Open Source Statement
+
+All the souce code, including any analysis and souce code generating plots, tables as well as this report, can be found in:
+https://github.com/YunyiShen/UW-Course-Projects/tree/master/STAT849_Final
+
+As a young scientist, I believe that being open is the best way being honest in analyzing any data set. This does not only include open the data set, the software used, but also the source of reports. 
 
 \FloatBarrier 
 \pagebreak
