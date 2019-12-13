@@ -1,0 +1,1314 @@
+---
+title: "Final Project, STAT 849"
+author: "Yunyi SHEN"
+date: "12/01/2019"
+header-includes:
+   - \usepackage{amsmath}
+   - \usepackage{amsthm}
+   - \usepackage{siunitx}
+   - \usepackage{amssymb}
+   - \usepackage{geometry}
+   - \usepackage{fancyhdr}
+   - \usepackage{chngcntr}
+   - \usepackage{caption}
+   - \pagestyle{fancy}
+   - \newtheorem{hyp}{Hypothesis}
+   - \fancyhead{} 
+   - \fancyhead[RO,LE]{Yunyi SHEN}
+   - \geometry{letterpaper,scale=0.7}
+   - \linespread{1.5}
+   - \counterwithin*{hyp}{subsubsection}
+   - \captionsetup{width=6in}
+   - \usepackage{placeins}
+   - \usepackage{booktabs}
+
+   
+output: pdf_document
+indent: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+require(ggplot2)
+require(reshap2)
+require(grid)
+require(dplyr)
+require(glmnet)
+require(pROC)
+require(lme4)
+require(ggcorrplot)
+
+set.seed(42)
+
+```
+
+```{r functions, include=FALSE}
+# A function for captioning and referencing images
+fig <- local({
+    i <- 0
+    ref <- list()
+    list(
+        cap=function(refName, text) {
+            i <<- i + 1
+            ref[[refName]] <<- i
+            paste("Figure ", i, ": ", text, sep="")
+        },
+        ref=function(refName) {
+            ref[[refName]]
+        })
+})
+
+# to have multiple pars, when work with ggplot
+vplayout <- function(x, y) viewport(layout.pos.row = x, layout.pos.col = y)
+
+# to use, add this to the chunk: {r, fig.cap=paste("Your caption.")}
+
+
+## calculate VIF
+getVIF = function(predictors,dataset){
+   only.predictors = dataset[,predictors]
+
+   VIF = lapply(predictors,function(ww){
+               as.formula(paste(ww,"~."))
+            }) %>%
+         lapply(lm,data = only.predictors) %>%
+         lapply(summary) %>%
+         sapply(function(w){1/(1-w$r.squared)})
+   names(VIF) = predictors
+   return(VIF)
+}
+
+invlogit = function(x){
+   exp(x)/(1+exp(x))
+}
+``` 
+
+
+# Calories
+
+## Abstract
+I analyzed the data set of common household food's calories and nutritional profile. Linear regression and LASSO were used in order to obtain empirical formula to predict calories density (defined as calorie divided by serving weight, in KCal/g) using measurement of nutritional profile (weight of such nutrient per gram of food). I obtained two such formula for different goals, 1) for predicting calories using 6 classes of nutrients. For this goal, best predictors were total fat, carbohydrates, protein, cholesterol, iron and vitamin A in IU unit. 2) for predicting calories using minimal nutrient measurements. For this goal, best predictors were total fat, carbohydrates and protein. Two models achieve similar prediction power which was measured using 10-fold cross validation and mean square prediction errors were 0.0641 (SD=0.012) and 0.0755  (SD=0.012), respectively. An unknown food item's calorie was predicted by two models and results were 50.3KCal (0.95 prediction interval$=(34.1,66.5)$) and 49.5KCal, respectively. 
+
+## Background
+ 
+Calories are essential to human health. How calories are different among different type of food was an foundation for nutritional science. We collected calories and nutritional content (e.g. amount of fat) data for 948 common household foods. Our goal in general was to understand which nutrition's effect on calorie level and produce a model for predicting calories from nutritional profile of the food.
+
+Nutrition can be divided into 6 main classes, naming fat, Protein, Cholesterol,Carbohydrates,Minerals and Vitamins. One of my goal was to find no more than one best representative in each of these 6 classes that together can best predict calories. Also, in some cases especially in engineering, researchers are more willing to obtain a model with least measurements while keeping an acceptable accuracy compare with a model with more measurements. This was the second goal of this analysis, i.e. finding a model using least predictors while keeping an acceptable performance of predicting.
+
+There are various way to address this feature selection problem. For the first goal, as we have small number of predictors, model selection based on Akaike's information criterion (AIC) could be used to select the model. For the second goal, LASSO can offer the sparse solution of this regression problem which fits the goal of having least predictors. As we mainly focus on prediction in this analysis,cross validation was to test the predicting power of both models. 
+
+This study proposed two empirical formula for predicting calories from nutritional profile. In total they used 6 and 3 predictors. Two formula could be chosen by users based on their goal.
+
+## Material and Method
+
+### Preparation Before Analysis
+
+ Because of the additive property of calories (in KCal), it is proportional to the weight of the food. To account for variance of weight in different food I first standardized all variables by the serving weight of the food, make the data being calorie density (in KCal/g) and portion of certain nutrient (e.g. mg VC/g). Because physically calorie is additive through out all ingredient, I did not do any transformation on calorie density. All the predictors were Z-standardized (i.e. linear transformed to obtain a 0 mean and 1 standard deviation, see Table 1 for the empirical mean and standard deviation). Because water is the product rather than reactant of major respiration reactions of human (Nelson and Lehninger 2008), together note that water has a large variance inflation factor (VIF) value of 78.85, water was not included as predictor in all the model constructions. I will later work on this reduced and standardized data set for analysis.
+
+
+```{r VIF,echo=FALSE,warning=FALSE,message=FALSE,error=FALSE, fig.height=6, fig.width=6}
+## read data
+Calories = read.table("./common_household_food.txt",header = T,sep = ",",stringsAsFactors = F)
+
+Calories_density = Calories[,2:22] %>% 
+   lapply("/",Calories$Weight) %>%
+   as.data.frame() %>%
+   na.omit
+
+Calories_standard = Calories[,2:22] %>% 
+   lapply("/",Calories$Weight) %>%
+   as.data.frame() 
+
+Calories_standard$Food = Calories$Food
+
+
+Calories_standard = Calories_standard %>% na.omit()
+
+Calories_standard[,-c(1,3,22)] = lapply(Calories_standard[,-c(1,3,22)],function(w){(w-mean(w))/sd(w)}) %>%
+   as.data.frame()
+
+
+predictors = names(Calories_standard)[-c(1:3,22)] # no KCal, weight and food name, as well as raw water
+
+VIF.full = getVIF(predictors,Calories_standard) # no VB
+
+Calories_standard_lm_data = Calories_standard[,c("KCal",predictors)]
+
+used_predictors =  Calories[,predictors]
+means_predictors = colMeans(used_predictors,na.rm = T)
+sds_predictors = apply(as.matrix(used_predictors),2,sd,na.rm = T)
+
+Newdata = Calories_standard_lm_data[0,]
+Newdata[1,] = c(NA,3,1.5,0,0.5,0.5,0,26,0,0,1.8,95,85,1250,125,0,0,0,30)
+Newdata[1,] = (Newdata-means_predictors)/sds_predictors
+
+
+```
+
+
+### Simple Linear Regression and Model Selection for Representitive of 6 classes of Nutritions
+
+In order to analyze the relationship between calorie level and nutritional content, I used linear regression between calorie and nutritional contents. This assumes measurement error on calories were independent identically normal distributed. 
+
+My ultimate goal is to obtain models predicting calorie density from nutritional profile. There are two subgoals. The first goal was to predict calorie density from major classes of nutrients: I divided all nutrition into 6 categories, i.e. Fats, Proteins, Carbohydrates, Cholesterol, Vitamin and Minerals (Table.1). I chose at most one predictor from each category and generated in total 1680 models. Models were compared using AIC. The model with least AIC value was chosen for prediction in this subgoal. Variance inflation factor (VIF) of predictors were calculated after conducting any regression to check multicollinearity problem. If maximum VIF is larger than 10, that model was investigated further. One independent sample was used to test the prediction power of the model. Standard model diagnostic measures was visually checked. Outliers were checked by Cook's distance with cutoff 1. I also conducted a 10-fold cross validation for this model to evaluate its predicting power. 
+
+
+### LASSO Regression for Least Measurement Prediction
+
+Second subgoal was to predict calorie density from least measurements while keeping a reasonable predicting power. Before conducting any regression analysis, I removed several redundant measurements based on previous studies. Four redundant measurements were removed: `SatFat`, `MonoUnSatFat`, `PolyUnSatFat` because for calorie contribution, these fat are similar thus we can use total fat `Fat` to represent. In food energy related literature, total fat were widely used (e.g. Rolls 2000, Rolls and Hammers 1995, Warwick and Schiffman 1992) . I also removed `VA.RE.` because we also used IU to measure VA profile. LASSO was used to obtain a prediction model with least predictors with an acceptable predicting power. I used 10-fold cross validation to obtain the shrinkage parameter $\lambda$. For robustness and the goal of least measurements,  $\lambda$ corresponding to the most regularized model (i.e. least measurements needed) such that MSPE is within one standard deviation of the minimum (keep reasonable predicting power) was chosen for prediction. The $\lambda$ gives the lowest estimated MSPE was used for comparison. This model will also be compared with the least AIC model in terms of MSPE estimated by 10-fold cross validation.
+
+All analysis was done in `R 3.6.1` (R Core Team 2019) and LASSO was done using `R` package `glmnet` (Friedman et al. 2010).
+
+```{r predictors used,echo=FALSE,warning=FALSE,message=FALSE,error=FALSE, fig.height=4, fig.width=6}
+abbr = matrix(nrow = 18,ncol = 5)
+colnames(abbr) = c("Abbreviation","Mean","SD","Unit","Group")
+
+
+abbr[,2] = signif( colMeans(used_predictors,na.rm = T),3)
+abbr[,3] = signif( apply(as.matrix(used_predictors),2,sd,na.rm = T),3)
+abbr[,4] = c("g","g","g","g","g","mg","g","mg","mg","mg","mg","mg","IU","RE","mg","mg","mg","mg")
+abbr[,1] = predictors
+abbr[,5] = c("Protein",rep("Fat",4),"Cholesterol","Carbohydrates",rep("Minerals",5),rep("Vitamins",6))
+
+row.names(abbr) = c("Protein","Total Fat","Saturated Fat","Monounsaturated Fat","Polyunsaturated Fat", "Cholesterol","Carbohydrates","Calcium","Phosphorus", "Irons","Potassium","Sodium","Vitamin A (IU)","Vitamin A (RE)", "Vitamin B1","Vitamin B2","Vitamin B3","Vitamin C")
+
+knitr::kable(abbr,caption = "Summary of predictor used and their grouping", format = "latex", booktabs = TRUE)
+
+```
+
+
+## Results
+
+### Predicting Food Calories from Class of Nutrients
+
+```{r CV for least AIC,echo=FALSE,warning=FALSE,message=FALSE,error=FALSE, fig.height=4, fig.width=6}
+Fat = c(0,2:5) # classes
+Protein = c(0,1)
+Chol = c(0,6)
+Carb = c(0,7)
+Mina = c(0,8:12)
+Vita = c(0,13:18)
+
+Possible_subset = expand.grid(Fat,Protein,Chol,Carb,Mina,Vita)[-1,]
+
+formulea = apply( as.matrix( Possible_subset),1,function(w,predictors){
+   temp = paste(predictors[w],collapse = "+")
+   temp = paste('KCal',temp,sep = "~")
+   as.formula(temp)
+   
+},predictors)
+
+formulea[[length(formulea)+1]] = formula("KCal~1")
+
+lm_all = lapply(formulea,lm,data = Calories_standard_lm_data)
+
+
+VIF_all_model = sapply(lm_all,function(lm_obj){
+   if(ncol(lm_obj$model)<3) return(NA)
+   temp = getVIF(colnames(lm_obj$model)[-1],dataset = as.data.frame(lm_obj$model))
+   max(temp)
+})
+
+
+AIC_table = sapply(lm_all,AIC)
+AIC_table = data.frame(formular = as.character( formulea),AIC = AIC_table)
+min_AIC = min(AIC_table$AIC)
+AIC_within2 = which( (AIC_table$AIC-min_AIC)<2)
+
+lm_lowest_AIC = lm_all[[which(AIC_table$AIC==min(AIC_table$AIC))]]
+
+Outliercheck = influence.measures(lm_lowest_AIC)
+
+
+set.seed(42)
+lm_lowestAIC_cv = cv.glmnet(x= as.matrix(lm_lowest_AIC$model[,-1]),y= as.matrix(lm_lowest_AIC$model[,1]),alpha=1, lambda = c(0,1e-10),standardize = F) # 10-fold cross validation
+
+
+
+
+```
+
+I ran 1680 models in total and no model has maximum VIF>10 (Fig.1 in appendix for the statistics of maximum VIF values of all models). There was no point with Cook's distance>1 in the model had least AIC (least AIC model later). Standard model diagnostic did not show obvious violation of assumptions in the least AIC model. Table. 2 showed predictor used in least AIC models as well as Lasso model. In the least AIC model, `Fat`, `Protein`,`Chol`, `Carb`,`Fe` and `VitaA.IU` were selected for prediction. 10-fold cross validation shows the MSPE is 0.064, with sd=0.012 implied a good prediction power of the least AIC model. 
+
+Explanation of model coefficients (Table.2) should be done with cautions. Because predictors were Z-standardized and thus not on the original scale. Parameters should be understood as calorie density change when such nutrient increased by 1 standard deviation (Table.1), while other nutrients hold constant. In this sense, fat has the largest influence on food calorie, when increased by 1 standard deviation, calorie density will increased by 1.8KCal/g, carbohydrates and protein were the second and third, with increase of 0.95 and 0.35 respectively. Follow that, cholsteral (0.025), iron (-0.031) and VA in IU (0.033) has much smaller coefficients. 
+
+Based on my result I proposed this empirical formula to predict calorie density (in KCal/g) from 6 class of nutrients:
+
+\begin{equation}
+\begin{aligned}
+\frac{Calorie}{Weight}&=2.25+1.8(\frac{Fat/Weight-12.5}{33.1})+0.35(\frac{Protein/Weight-7.23}{10.1})+0.95(\frac{Carb/Weight-34}{78.5})\\
+&+0.025(\frac{Chol/Weight-32.6}{12.0})-0.031(\frac{Fe/Weight-1.78}{3.14})+0.033(\frac{VA.IU/Weight-1040}{3860})
+\end{aligned}
+\end{equation}
+
+This formula can be used on the original scale of nutrients, however cautious should be paid to the unit of such measurements, see Table.1 for a summary. Test result for the unknown food item was given in Table.3. 
+
+
+### Predicting Food Calories from Least Measurement of Nutrients
+
+
+```{r cross validation plot for lasso ,echo=FALSE,warning=FALSE,message=FALSE,error=FALSE, fig.height=4, fig.width=6}
+
+Calories_standard_lasso_data = Calories_standard_lm_data[,-c(4:6,15)]
+
+## LASSO
+set.seed(42)
+lasso_cv = cv.glmnet(x= as.matrix( Calories_standard_lasso_data[,-(1)]),y= as.matrix( Calories_standard_lasso_data[,1]),alpha=1, standardize = T)
+
+
+
+lowest_cv = order(lasso_cv$cvm)[1:40]
+
+lasso_lambda = data.frame(lambda = lasso_cv$lambda[lowest_cv],MSPE = lasso_cv$cvm[lowest_cv],low = lasso_cv$cvlo[lowest_cv],high = lasso_cv$cvup[lowest_cv])
+
+
+CV_plot = ggplot(data = lasso_lambda,aes(x = log(lambda),y=MSPE))+
+   geom_point() + 
+   geom_errorbar(aes(ymin=low, ymax=high), width=.05) + 
+   geom_hline(yintercept = lm_lowestAIC_cv$cvm[1])+
+   geom_hline(yintercept = lm_lowestAIC_cv$cvlo[1])+
+   geom_hline(yintercept = lm_lowestAIC_cv$cvup[1])
+```
+
+Fat, protein and carbohydrates were chosen by LASSO out of 14 candidate predictors using the 1se rule. Model performance evaluated by MSPE indicated that this simplest model has only minor performance lose (MSPE(sd)=0.076(0.012), within 1 stand deviation of MSPE compare with the least AIC model (`least AIC` in Table.2, MSPE(sd)=0.064(0.012)) as well as LASSO chosen using the least MSPE rule (`LASSO-min` in Table.2, MSPE(se)=0.065(0.012)). However, number of measurement required decreased by 3 and 2 compare with least AIC and least MSPE LASSO model. 
+
+From LASSO result, I proposed a empirical formula for predicting calories from total fat, carbohydrates and protein content:
+
+\begin{equation}
+\frac{Calorie}{Weight}=2.25+1.70(\frac{Fat/Weight-12.5}{33.1})+0.30(\frac{Protein/Weight-7.23}{10.1})+0.86(\frac{Carb/Weight-34}{78.5})
+\end{equation}
+
+```{r summary table for lm and lasso,echo=FALSE,warning=FALSE,message=FALSE,error=FALSE, fig.height=4, fig.width=6}
+Summary_lm_lasso = matrix(0,3,8)
+row.names(Summary_lm_lasso) = c("least AIC","LASSO-1se","LASSO-min")
+colnames(Summary_lm_lasso) = c("intercept(se)","Fat(se)","Protein(se)","Carb(se)","Chol(se)","Fe(se)","VA.IU(se)","MPSE(sd)")
+
+## least AIC
+Summary_lm_lasso[1,c(1,2,3,5,4,6,7)] = apply(summary(lm_lowest_AIC)$coefficients,1,function(ww){
+   ww = signif(ww,3)
+   paste0(ww[1],"(",ww[2],")")
+})
+Summary_lm_lasso[1,8] = paste0(signif(lm_lowestAIC_cv$cvm[1],3),"(",signif(lm_lowestAIC_cv$cvsd[1],2),")")
+
+
+## lasso 1se
+Summary_lm_lasso[2,5:7]="-"
+
+Summary_lm_lasso[2,1:4] = signif(coef(lasso_cv)[c(1,3,2,5)],3)
+
+Summary_lm_lasso[2,8] = paste0(signif(lasso_cv$cvm[lasso_cv$lambda==lasso_cv$lambda.1se],3),"(",signif(lasso_cv$cvsd[lasso_cv$lambda==lasso_cv$lambda.1se],2),")")
+
+## lasso min
+Summary_lm_lasso[3,6]="-"
+
+Summary_lm_lasso[3,c(1:5,7)] = signif(coef(lasso_cv,s="lambda.min")[c(1,3,2,5,4,11)],3)
+
+
+Summary_lm_lasso[3,8] = paste0(signif(lasso_cv$cvm[lasso_cv$lambda==lasso_cv$lambda.min],3),"(",signif(lasso_cv$cvsd[lasso_cv$lambda==lasso_cv$lambda.min],2),")")
+
+Summary_lm_lasso = t(Summary_lm_lasso)
+
+knitr::kable(Summary_lm_lasso,caption = "Model Coefficients and 10-fold Cross Validation Mean Squared Prediction Error (MSPE) of least AIC and LASSO models. Predictors Unshown were Unused",format = "latex", booktabs = TRUE)
+
+```
+
+Point estimation of coefficients of common predictors (fat, cabohydrat and protein) are similar, indicate the consistency of these two models. User could chose between these two based on their goal. 
+
+
+```{r new food item prediction, echo=FALSE,warning=FALSE,message=FALSE,error=FALSE, fig.height=4, fig.width=6}
+
+lasso_prediction = c( signif( 33 * predict(lasso_cv,newx =as.matrix(Newdata[,-c(1,4:6,15)],s = "lambda.1se")),3),NA,NA) 
+
+lm_prediction = 33 *predict(lm_lowest_AIC,newdata = Newdata,interval = "prediction")
+
+two_prediction = rbind(signif(lm_prediction,3),lasso_prediction)
+row.names(two_prediction) = c("least AIC","LASSO-1se")
+
+options(knitr.kable.NA = '-')
+
+knitr::kable(two_prediction,caption = "Point Prediction and 0.95 Prediction intervals of least AIC and LASSO model for new food item", format = "latex", booktabs = TRUE,escape = T,digits = 3,label = "tab:newfood")
+```
+
+
+## Discussion
+
+### Justification of Classification of Nutrients
+
+Despite the previous knowledge about the classification of nutrients, we can still observe the clustering nature of the nutrients by looking at their correlation plot. 
+
+```{r cor plot, echo=FALSE,warning=FALSE,message=FALSE,error=FALSE, fig.height=4, fig.width=5,fig.cap=paste("Correlation plot of all candidate predictors")}
+
+ggcorrplot(cor(Calories_standard[,predictors]), type='lower')
+```
+
+Thus it make sense to select one out of the each class for predicting but not for inference on which nutrient has the largest influence on calories for two reasons: first we cannot infer causation from correlation, second if several nutrients have similar source from food, then food data cannot used to evaluate the calorie change if holding one constant and change another.  
+
+
+### Investigation of Points with Large Residuals
+
+Three points had large residuals in the least AIC model (Fig.2 in Appendix), point 3,4,and 5. They are all Shisky with proof of 80, 86 and 90 respectively. All residuals are positive (2.241,2.45,2.57, while residual standard deviation was estimated as 0.2488). Since they are all ethanol rich drinks, one possible explanation is because we did not measure ethanol level in these drinks. Bomb calorimetry was widely used in measuring food calories (e.g. Acheson, et al. 1980). In this method, people combust the food in a chamber, with water cover around the chamber then measure the temperature change of the water to obtain the energy of combustion. Ethanol can be combusted and contains large amount of energy (with combustion enthalpy -1370.7 kJ/mol = 7.12 KCal/g). From here we can calculate the calories from ethanol, for 80-PROOF, the amount of ethonal can be estimated from the remaining mass after taking out water, which is $42\times(1-0.67)=13.86g$, the energy from ethanol is given by $13.86\times7.12=98.7KCal$ and then the residuals for calorie densities are 0.0088,0.0638 and 0.0875 respectively, which is lower than the residual predicted by the model. This may explain the residual of point 3 to 5. Detailed knowledge about the experimental design underlying this data set is necessary for further understanding of these large residuals.
+
+
+### Major Calorie Bearing Nutrients
+
+The predictor picked by LASSO agree with the previous knowledge of that fat, carbohydrates and proteins are major energy bearing nutrient (Nelson and Lehninger 2008). Consider point estimation of the coefficient corresponding to other predictors in the least AIC model, they are all smaller than those of fat, carbohydrates and proteins by 3 orders of magnitude. These observations were consistent with the knowledge long been known: fat, carbohydrates and protein explains more of the variance in food calories than other nutrients. Again, explanation of there parameters should be careful, since all predictors were Z-standardized, one unit change correspond to changing by one standard deviation rather than its original unit. 
+
+However, since there were multicollineraty (Figure.1), from this analysis we cannot conclude that these three nutrients contributed most of the calories in food items in a causation sense. The empirical formula can be useful for predicting but it may not be a physically correct model to explain the source of calories. 
+
+
+### Implication on Calorie Prediction
+
+I proposed two empirical models for users to choose based on their goal and measurement available. If the goal is to predict calories from least measurement, LASSO model can be used, with only 3 measurement needed. If their goal is to predict calories from measurements of classes of nutrients, least AIC model can be used. Least AIC model suggested measure should be taken on total fat, protein, cholesterol carbohydrates, iron and vitamin A in IU unit. Units should be same with Table.1. 
+
+## End of the Main Report
+
+\setcounter{figure}{0}
+\setcounter{table}{0}
+
+
+\newpage
+## Appendix
+Two figures were in the appendix. Figure.1 is the histogram of all model's largest VIF score. Figure.2 is the residual vs fitted plot of the least AIC model.
+
+```{r VIF statistics,fig.cap=paste("Histogram of maximum VIF values for all ardinary least square linear model fitted"),echo=FALSE,warning=FALSE,message=FALSE,error=FALSE, fig.height=3, fig.width=4.5}
+ggplot(data = data.frame(VIF =VIF_all_model ),aes(x=VIF))+
+   geom_histogram(aes(x=VIF))+
+   theme(text = element_text(size=14))#, axis.text.x = element_text(angle=90, hjust=1))
+
+```
+
+```{r residual plot,fig.cap=paste("Residual plot for least AIC model"),echo=FALSE,warning=FALSE,message=FALSE,error=FALSE, fig.height=3, fig.width=4.5}
+plot(lm_lowest_AIC,which = 1)
+
+```
+
+
+\pagebreak
+## References
+
+Acheson, K. J., et al. "The measurement of food and energy intake in man—an evaluation of some techniques." The American Journal of Clinical Nutrition 33.5 (1980): 1147-1154.
+
+Friedman, Jerome, Trevor Hastie, and Rob Tibshirani. "Regularization paths for generalized linear models via coordinate descent." Journal of statistical software 33.1 (2010): 1.
+
+Institute of Medicine (US) Standing Committee on the Scientific Evaluation of Dietary Reference Intakes. Dietary reference intakes for thiamin, riboflavin, niacin, vitamin B6, folate, vitamin B12, pantothenic acid, biotin, and choline. National Academies Press (US), 1998.
+
+Nelson, David L., Albert L. Lehninger, and Michael M. Cox. Lehninger principles of biochemistry. Macmillan, 2008.
+
+R. Core Team. "R: A language and environment for statistical computing." (2019) https://www.R-project.org/ 
+
+Rolls, Barbara J. "The role of energy density in the overconsumption of fat." The Journal of nutrition 130.2 (2000): 268S-271S.
+
+Thompson, June. "Vitamins, minerals and supplements: part two." Community practitioner 78.10 (2005): 366.
+
+Warwick, Zoe S., and Susan S. Schiffman. "Role of dietary fat in calorie intake and weight gain." Neuroscience & Biobehavioral Reviews 16.4 (1992): 585-596.
+
+\pagebreak
+
+# Audibility
+
+\setcounter{figure}{0}
+\setcounter{table}{0}
+
+## Abstract
+
+Researchers proposed to use envelope following responses (EFRs) to predict whether a speech was audible or not. I compared amplitude (F-test) based and phase based (Rayleigh-test) methods for detecting EFRs with the sensation level (SL) which was a benchmark method for audibility in 8 carriers that was divided into 3 frequency categories. In total 672 trails were conducted during which 21 participant involved and 8 different carries each had 4 different sound pressure levels. I used receiver operating characteristic (ROC) curve and the area under the curve (AUC) to evaluate the performance of EFR in predicting audibility assigned by SL method. I fail to detect differences in the AUC values between amplitude and phase based methods in either overall (p=0.56 DeLong test, $H_0$: no difference in AUC value) or carrier-specific situations (maximum p=0.093 DeLong test $H_0$ same as before). Two tests had highest AUC on carrier s (0.89,0.93 for amplitude and phase) and sh (0.84 for both amplitude and phase) and lowest on carrier /a/F1 (0.64 and 0.60 for amplitude and phase). Afterward I set cut off to be 0.05 convert EFR detection to a binary variable, and perform a $\chi^2$ independence test between consistent prediction with SL and carrier/frequency on both F and Rayleigh test results. After correction of p-value for multiple comparison, I still detect dependency between the consistent prediction and carrier (p=2.83e-8,1.83e-7 for F and RayLeigh with $H_0$:number of consistent prediction is independent with carrier) as well as frequency (p=3.26e-8,2.47e-8, with similar $H_0$ but for frequency). This result suggested that performance of EFR methods depends on carrier and frequency. To Evaluate this dependency, for each EFR detection method I conducted 10 logistic regression analysis between EFR detection and SL, carrier as well as frequency, in 5 of them included individual as random effect on intercept. Akaike information criterion (AIC) was used to determine the best model for prediction. Best model for two tests had similar structure i.e. included random effect, intercept was same among carriers and slope was different among carriers. 10-fold cross validation were conducted and ROC-AUC were calculated to asses their predicting power on ESR. SL threshold for EFR detection was defined as the value SL to have 0.5 chance of getting an EFR detection. Such thresholds were calculated and their bootstrap 0.95 confidence interval (CI) was obtained. I found all thresholds were greater than 0 and their 0.95 CI did not overlap with 0 suggested that EFR based method were less sensitive than SL method. And in general high frequency groups had lower threshold. Carrier `s` has the lowest threshold of 6.03 (0.95 bootstrap CI: 4.08-8.01) for F-test and 3.36 (0.95 boot strap CI: 1.58-4.67) for Rayleigh test. Carrier /a/F1 had the highest of 33.3 (0.95 bootstrap CI: 26.1-41.5) for F-test and 25.8 (0.95 bootstrap CI: 19.3,33.5) for Rayleigh-test.
+
+## Background
+
+Researchers proposed a new method called envelope following responses (EFR) to evaluate audibility of certain speech. EFR was based on electro-encephalogram (EEG) which was a real-time data collection method that flourished recently. EFR, the new EEG based method has a potential to be widely used by researchers interested in real-time evaluation of audibility. However before using it for further research, validation was needed. To validate this newly proposed model, researcher was interested in compare it with a benchmark method that using sensation level (SL, positive means audible).
+
+Two method for detecting an EFR were used. One compares the amplitude of the EFR signal with noise amplitude using F-test. Another compares the inter-trial consistency of phase using Rayleigh test. Two methods both produced a p-value as predictor of EFR detection. Researchers considered p<0.05 to be a detected EFR. 
+
+It was also of interest whether there exist any systematic pattern of EFR detectability. Researchers used different frequency and sound pressure for different trail in order to detect such pattern. 
+
+To validate this new method, I compared detected EFR and audibility based on benchmark SL method. I evaluated number of consistent predictions between EFR and SL in variance settings. Further, to determine the threshold of SL to detect a EFR, I used regression analysis between EFR detection (at 0.05 level) and their corresponding SL, as well as carriers/frequencies as predictors. 
+
+## Material and Method
+
+### Experiment
+
+In total 21 participant involved in this experiment. Each participant was given 32 speeches with 8 different carriers and each carriers had 4 different sound pressure level (SPL). Benchmark was taken using sensation level (SL) method. Meanwhile, participant's EEGs were recorded for analysis. Two method were used to identify an EFR: compare amplitude with noise using F-test and compare inter-trial phase consistency using Rayleigh-test. Test p-values were recorded. 
+
+```{r ,echo=FALSE,warning=FALSE,message=FALSE,error=FALSE, fig.height=3, fig.width=4.5}
+getFreq = function(kk){
+   if(grepl("F1",kk)) return("low")
+   if(grepl("F2",kk)) return("mid")
+   if(grepl("s",kk)|grepl("sh",kk)) return("high")
+   
+}
+
+audi = read.csv("./audibility.csv",header = T,stringsAsFactors = F)
+
+audi$Freq = sapply(( audi$Carrier),getFreq)
+audi$audibility_F = audi$Ftest<0.05
+audi$audibility_Ray = audi$Rayleigh <0.05
+audi$audibility_SL = audi$SL>0
+
+audi$audibility_F_SL = audi$audibility_F==audi$audibility_SL
+audi$audibility_Ray_SL = audi$audibility_Ray==audi$audibility_SL
+
+```
+
+
+
+
+### Comparing F-test and Rayleigh test for Detecting Audibility 
+
+In this section, first goal is to compare two test's predicting power on the whole data set. We can view the two tests as two classifiers whose predictors were p-values and our goal in this section was to compare these two classifier's performance using ground truth given by SL method here.
+
+To reach our goal, I did not use any pre-specified cut-off p-values for detection, instead I used receiver operating characteristic (ROC) curve and the area under the curve (AUC) to evaluate their performance. SL was used as ground truth. Speech with $SL>0$ was considered as audible (positive). AUC was calculated to be a measurement of overall performance for each test. Because two tests were testing the same individual and trial, I used DeLong's test (DeLong et al. 1988) for correlated AUCs to test the null hypothesis that two AUCs are the same (i.e. there is no proformance difference between F and Rayleigh test). 
+
+Later, I divided the data set in to 8 sub data sets based on carriers and conducted the same ROC-AUC test for each of them. Due to multiple inferences, I adjust the p-value cutoff for significant to $0.05/9=0.00556$. 
+
+### Evaluating EFR's Prediction on SL based Audibility
+
+In this section, the goal is to check whether a detected EFR can predict a positive SL, or vise versa. I used p<0.05 as cutoff of detected EFR in both F-test and Rayleigh test results. I use SL>0 for benchmark audible. I evaluate the consistent rate as a measure of accuracy, defined as number of consistent predictions (i.e. detect EFR and $SL>0$, or no detected EFR and $SL<0$) divided by total number of trails. 
+
+Further, to test whether accuracy is different between carriers or frequency groups, I used Pearson's $\chi^2$ test of independency between consistent prediction and carriers/frequency groups respectively. The null hypothesis of these tests were consistent prediction was independent with carriers or frequency groups.
+
+
+### Evaluating Minimum SL Needed for EFR Detection
+
+In this section, the goal is to find the minimum SL needed for EFR to be detected. Using cut off $p<0.05$ I convert EFR to a binary responses. With the assumptions participant's EFR detection were independent to each other and follow Bernoulli distribution. I constructed 5 mixed effect logistic regressions using individual as random intercept and SL and carrier/frequency as predictors.  I constructed 5 fixed effect logistics regressions using SL and carrier/frequency as predictors (this further assumed that different trails on one participant were independent). For each class of logistic regressions (i.e. fixed and random effect), 5 regressions correspond to: 
+
+1. Only SL has the main effect; 
+
+2. All groups share the intercept, slope differs among different frequency (interaction between SL and frequency, no main effect); 
+
+3. All groups share the intercept, slope differs among different carriers (interaction between SL and carrier, no main effect);
+
+4. Slope as well as intercept differs among different frequency (interaction between SL and frequency, with main effect); 
+
+5. Slope as well as intercept differs among different carriers (interaction between SL and carrier, with main effect).
+
+In which, slope should be understand as the log detection odds ratio change when SL increased by 1 unit and intercept was the baseline probability of detecting a EFR when SL is 0.
+
+
+
+```{r 10 models F-test,echo=FALSE,warning=FALSE,message=FALSE,error=FALSE, fig.height=3, fig.width=4.5}
+
+## same intercept
+min_SL_freq_glm = glm(audibility_F~SL:Freq,data = audi,family = binomial())
+min_SL_carrier_glm = glm(audibility_F~SL:Carrier,data = audi,family = binomial())
+min_SL_global_glm = glm(audibility_F~SL,data = audi,family = binomial())
+
+min_SL_carrier_glmm = glmer(audibility_F~SL:Carrier + (1|Participant),data = audi,family = binomial())
+min_SL_freq_glmm = glmer(audibility_F~SL:Freq + (1|Participant),data = audi,family = binomial())
+min_SL_global_glmm = glmer(audibility_F~SL+ (1|Participant),data = audi,family = binomial())
+
+## different intercept
+min_SL_freq_difintc_glm = glm(audibility_F~SL*Freq,data = audi,family = binomial())
+min_SL_carrier_difintc_glm = glm(audibility_F~SL*Carrier,data = audi,family = binomial())
+
+
+min_SL_carrier_difintc_glmm = glmer(audibility_F~SL*Carrier + (1|Participant),data = audi,family = binomial())
+min_SL_freq_difintc_glmm = glmer(audibility_F~SL*Freq + (1|Participant),data = audi,family = binomial())
+
+
+getthr = function(obj){
+   temp = summary(obj)$coefficients
+   -temp[1,1]/temp[-1,1]
+}
+
+
+AIC_table_EFR = matrix(0,10,5)
+colnames(AIC_table_EFR) = c("random effect","intercept","slope","AIC","deltaAIC")
+row.names(AIC_table_EFR) = 1:10
+
+options_slope = c("same among carriers","same among frequencies","differ among carriers","differ among frequencies","global")
+options_re = c("individual on intercept","none")
+
+AIC_table_EFR[1,] = c(options_re[1],options_slope[1],options_slope[3], signif(AIC(min_SL_carrier_glmm),3),0) # same intecpt, different slope, dependends on carriers
+
+AIC_table_EFR[2,] = c(options_re[1],options_slope[2],options_slope[4], signif(AIC(min_SL_freq_glmm),3),signif(AIC(min_SL_freq_glmm)-AIC(min_SL_carrier_glmm),3)) # same intercept different slope dependends on frequency
+
+AIC_table_EFR[3,] = c(options_re[1],options_slope[5],options_slope[5], signif(AIC(min_SL_global_glmm),3),signif(AIC(min_SL_global_glmm)-AIC(min_SL_carrier_glmm),3)) # all same, only deoendends on SL
+
+AIC_table_EFR[4,] = c(options_re[1],options_slope[3],options_slope[3], signif(AIC(min_SL_carrier_difintc_glmm),3),signif(AIC(min_SL_carrier_difintc_glmm)-AIC(min_SL_carrier_glmm),3)) # different intercept and slope, depednends on carrier
+
+AIC_table_EFR[5,] = c(options_re[1],options_slope[4],options_slope[4], signif(AIC(min_SL_freq_difintc_glmm),3),signif(AIC(min_SL_freq_difintc_glmm)-AIC(min_SL_carrier_glmm),3))
+
+
+
+## fix effect models
+AIC_table_EFR[6,] = c(options_re[2],options_slope[1],options_slope[3], signif(AIC(min_SL_carrier_glm),3),signif(AIC(min_SL_carrier_glm)-AIC(min_SL_carrier_glmm),3)) # same intecpt, different slope, dependends on carriers
+
+
+AIC_table_EFR[7,] = c(options_re[2],options_slope[2],options_slope[4], signif(AIC(min_SL_freq_glm),3),signif(AIC(min_SL_freq_glm)-AIC(min_SL_carrier_glmm),3)) # same intercept different slope dependends on frequency
+
+AIC_table_EFR[8,] = c(options_re[2],options_slope[5],options_slope[5], signif(AIC(min_SL_global_glm),3),signif(AIC(min_SL_global_glm)-AIC(min_SL_carrier_glmm),3)) # all same, only deoendends on SL
+
+AIC_table_EFR[9,] = c(options_re[2],options_slope[3],options_slope[3], signif(AIC(min_SL_carrier_difintc_glm),3),signif(AIC(min_SL_carrier_difintc_glm)-AIC(min_SL_carrier_glmm),3)) # different intercept and slope, depednends on carrier
+
+AIC_table_EFR[10,] = c(options_re[2],options_slope[4],options_slope[4], signif(AIC(min_SL_freq_difintc_glm),3),signif(AIC(min_SL_freq_difintc_glm)-AIC(min_SL_carrier_glmm),3))
+
+
+deltaAIC = as.numeric( AIC_table_EFR[,"deltaAIC"])
+
+AIC_table_EFR = AIC_table_EFR[order(deltaAIC),]
+
+row.names(AIC_table_EFR) = 1:10
+
+#knitr::kable(AIC_table_EFR,caption = "AIC table for 10 candidate logistic regression models on SL and F-test based EFR detection",digits = 3,format = "latex", booktabs = TRUE)
+```
+
+```{r 10 models R-test,echo=FALSE,warning=FALSE,message=FALSE,error=FALSE, fig.height=3, fig.width=4.5}
+
+## same intercept
+R_min_SL_freq_glm = glm(audibility_Ray~SL:Freq,data = audi,family = binomial())
+R_min_SL_carrier_glm = glm(audibility_Ray~SL:Carrier,data = audi,family = binomial())
+R_min_SL_global_glm = glm(audibility_Ray~SL,data = audi,family = binomial())
+
+R_min_SL_carrier_glmm = glmer(audibility_Ray~SL:Carrier + (1|Participant),data = audi,family = binomial())
+
+R_min_SL_freq_glmm = glmer(audibility_Ray~SL:Freq + (1|Participant),data = audi,family = binomial())
+
+R_min_SL_global_glmm = glmer(audibility_Ray~SL+ (1|Participant),data = audi,family = binomial())
+
+## different intercept
+R_min_SL_freq_difintc_glm = glm(audibility_Ray~SL*Freq,data = audi,family = binomial())
+R_min_SL_carrier_difintc_glm = glm(audibility_Ray~SL*Carrier,data = audi,family = binomial())
+
+
+R_min_SL_carrier_difintc_glmm = glmer(audibility_Ray~SL*Carrier + (1|Participant),data = audi,family = binomial())
+R_min_SL_freq_difintc_glmm = glmer(audibility_Ray~SL*Freq + (1|Participant),data = audi,family = binomial())
+
+
+
+AIC_table_EFR_R = matrix(0,10,5)
+colnames(AIC_table_EFR_R) = c("random effect","intercept","slope","AIC","deltaAIC")
+
+
+AIC_table_EFR_R[1,] = c(options_re[1],options_slope[1],options_slope[3], signif(AIC(R_min_SL_carrier_glmm),3),0) # same intecpt, different slope, dependends on carriers
+
+AIC_table_EFR_R[2,] = c(options_re[1],options_slope[2],options_slope[4], signif(AIC(min_SL_freq_glmm),3),signif(AIC(R_min_SL_freq_glmm)-AIC(R_min_SL_carrier_glmm),3)) # same intercept different slope dependends on frequency
+
+AIC_table_EFR_R[3,] = c(options_re[1],options_slope[5],options_slope[5], signif(AIC(R_min_SL_global_glmm),3),signif(AIC(R_min_SL_global_glmm)-AIC(R_min_SL_carrier_glmm),3)) # all same, only deoendends on SL
+
+AIC_table_EFR_R[4,] = c(options_re[1],options_slope[3],options_slope[3], signif(AIC(R_min_SL_carrier_difintc_glmm),3),signif(AIC(R_min_SL_carrier_difintc_glmm)-AIC(R_min_SL_carrier_glmm),3)) # different intercept and slope, depednends on carrier
+
+AIC_table_EFR_R[5,] = c(options_re[1],options_slope[4],options_slope[4], signif(AIC(R_min_SL_freq_difintc_glmm),3),signif(AIC(R_min_SL_freq_difintc_glmm)-AIC(R_min_SL_carrier_glmm),3))
+
+
+
+## fix effect models
+AIC_table_EFR_R[6,] = c(options_re[2],options_slope[1],options_slope[3], signif(AIC(R_min_SL_carrier_glm),3),signif(AIC(R_min_SL_carrier_glm)-AIC(R_min_SL_carrier_glmm),3)) # same intecpt, different slope, dependends on carriers
+
+
+AIC_table_EFR_R[7,] = c(options_re[2],options_slope[2],options_slope[4], signif(AIC(min_SL_freq_glm),3),signif(AIC(min_SL_freq_glm)-AIC(min_SL_carrier_glmm),3)) # same intercept different slope dependends on frequency
+
+AIC_table_EFR_R[8,] = c(options_re[2],options_slope[5],options_slope[5], signif(AIC(R_min_SL_global_glm),3),signif(AIC(R_min_SL_global_glm)-AIC(R_min_SL_carrier_glmm),3)) # all same, only deoendends on SL
+
+AIC_table_EFR_R[9,] = c(options_re[2],options_slope[3],options_slope[3], signif(AIC(R_min_SL_carrier_difintc_glm),3),signif(AIC(R_min_SL_carrier_difintc_glm)-AIC(R_min_SL_carrier_glmm),3)) # different intercept and slope, depednends on carrier
+
+AIC_table_EFR_R[10,] = c(options_re[2],options_slope[4],options_slope[4], signif(AIC(R_min_SL_freq_difintc_glm),3),signif(AIC(R_min_SL_freq_difintc_glm)-AIC(R_min_SL_carrier_glmm),3))
+
+
+deltaAIC_R = as.numeric( AIC_table_EFR_R[,"deltaAIC"])
+
+AIC_table_EFR_R = AIC_table_EFR_R[order(deltaAIC_R),]
+
+row.names(AIC_table_EFR_R) = 1:10
+
+
+```
+
+Akaike information creterion (AIC) was used to choose the best model for calculating the minimum SL needed, defined as the SL value that there was a 0.5 chance to have a EFR detection. For mixed effect models, 95% confidence intervals were calculated using bootstrap method offered in `R` package `lme4` (Bates et al. 2015) and `boot` (Canty and Ripley 2019). I took 500 bootstrap samples to construct such confidence interval (CI) using percentiles of bootstrap samples. 
+
+```{r CV function, echo=FALSE, warning=FALSE,message=FALSE,error=FALSE, fig.height=3, fig.width=5.5}
+
+require(caret)
+CV_glmer = function(obj,fold){
+   response = as.character( obj@call$formula[2]) # get the name of response
+   data_ = obj@frame # get the data
+   family_ = as.character( obj@call$family)
+   
+   folds = createFolds(y=data_[,response]
+                       ,k=fold) # create a fold
+   
+   formular = obj@call$formula # get formular
+   
+   retrain = lapply(1:fold,function(i,folds,
+                                    formular,
+                                    data_,
+                                    response,
+                                    family_){
+                              #start ith cross validation 
+      
+                              # train with training set:      
+                              retrained_model = glmer(formular,
+                                    data = data_[-folds[[i]],],
+                                    family = family_) 
+                              
+                              
+                              # predict the testing:
+                              pred_retrain = predict(retrained_model,
+                              newdata = data_[folds[[i]],],
+                              type = "response")
+                              roc_data = 
+                                 data.frame(resp =
+                                               data_[folds[[i]],response],
+                                            pred = pred_retrain)
+
+                              # return the retrained model and prediction:
+                              return(list(
+                                 model = retrained_model,
+                                 roc_data=roc_data)) 
+               },folds,formular,data_,response,family_) # end the lapply
+   
+    ## do ROC
+    roc_res = lapply(retrain,function(w){
+                              roc(w$roc_data,
+                                  response = "resp",
+                                  predictor = "pred")
+       }) # get ROC using the test sample
+   
+   return(list(ROC=roc_res,models = retrain)) # return result
+   
+}
+```
+
+
+
+```{r 10-fold CV for all, echo=FALSE, warning=FALSE,message=FALSE,error=FALSE, fig.height=3, fig.width=5.5}
+set.seed(45)
+F_test_10_fold_CV = CV_glmer(min_SL_carrier_glmm,fold = 10)
+Rayleigh_test_10_fold_CV = CV_glmer(R_min_SL_carrier_glmm,fold = 10)
+
+F_test_10_fold_ROCs = F_test_10_fold_CV$ROC
+Rayleigh_test_10_fold_ROCs = Rayleigh_test_10_fold_CV$ROC
+
+
+AUC_F_test_10_fold = sapply(F_test_10_fold_ROCs,function(kk){
+   kk$auc
+})
+
+AUC_Rayleigh_test_10_fold = sapply(Rayleigh_test_10_fold_ROCs,function(kk){
+   kk$auc
+})
+
+F_test_10_fold_thr = sapply(F_test_10_fold_CV$models,function(ww){ getthr(ww$model)})
+
+Rayleigh_test_10_fold_thr = sapply(Rayleigh_test_10_fold_CV$models,function(ww){ getthr(ww$model)})
+
+
+```
+
+Bootstrap process will resample the data with replacement and fit the same models for 500 times, given estimation of some quantities that of interest. Then we can take the sample as an approximated sample distribution of such estimates. I took 0.975 and 0.025 percentile to construct the 0.95 CI for thresholds. 
+
+Prediction power of this least AIC model was also estimated using ROC-AUC method with 10-fold cross validation. Point estimations (i.e. point estimation of threshold and response curve) were calculated by taking average of all 10 models first on logit scale and transform back to raw scale. Then I predicted the response curve assuming the random effect is 0, i.e. an average patient. I first predict the response on logit scale by 10 models in the cross validation process and take inverse logit to get the response curve. Subset of data was chosen using `R` package `caret` (Kuhn et al. 2019).
+
+```{r set number of bootstrap here,echo=FALSE, warning=FALSE,message=FALSE,error=FALSE, fig.height=3, fig.width=5.5}
+n_boot = 500
+```
+
+```{r boot CI of threshold F-test,echo=FALSE, warning=FALSE,message=FALSE,error=FALSE, fig.height=3, fig.width=5.5}
+cl <- snow::makeSOCKcluster(7)
+snow::clusterEvalQ(cl,library("lme4"))
+snow::clusterExport(cl, c("getthr","min_SL_carrier_glmm","n_boot"), envir = .GlobalEnv)
+#snow::clusterExport(cl, min_SL_carrier_glmm, envir = .GlobalEnv)
+#snow::clusterExport(cl, n_boot, envir = .GlobalEnv)
+
+set.seed(42)
+boot_thr = bootMer(min_SL_carrier_glmm,getthr,nsim = n_boot,.progress = "none",parallel = "snow",ncpus = 7)
+
+boot_ci = lapply(1:8,function(i,boot_thr){
+   boot::boot.ci(boot_thr,index = i,type = "perc")
+},boot_thr)
+
+names(boot_ci) = colnames(boot_thr$t)
+
+boot_ci = sapply(boot_ci,function(w) w$percent )
+
+#thr_point = getthr(min_SL_carrier_glmm)
+
+thr_point = rowMeans(F_test_10_fold_thr)
+
+carriers = sapply(names(thr_point),function(w){substr(w,start = 11,stop=nchar(w))})
+
+plotdata_minimumSL = data.frame(minimumSL = thr_point,lwr = boot_ci[4,],hig = boot_ci[5,],carrier = carriers,Frequency = c("low","mid","low","mid","high","high","low","mid"))
+
+plotdata_minimumSL = plotdata_minimumSL[c(1,3,7,2,4,8,5,6),]
+
+plotdata_minimumSL$carrier = factor(plotdata_minimumSL$carrier,levels = plotdata_minimumSL$carrier)
+
+plotdata_minimumSL$Frequency = factor(plotdata_minimumSL$Frequency,levels = c("low","mid","high"))
+
+```
+
+```{r boot CI of threshold Rayleigh-test,echo=FALSE, warning=FALSE,message=FALSE,error=FALSE, fig.height=3, fig.width=5.5}
+
+snow::clusterExport(cl, c("getthr","R_min_SL_carrier_glmm","n_boot"), envir = .GlobalEnv)
+
+set.seed(42)
+boot_thr_R = bootMer(R_min_SL_carrier_glmm,getthr,nsim = n_boot,.progress = "none",parallel = "snow",ncpus = 7)
+
+boot_ci_R = lapply(1:8,function(i,boot_thr){
+   boot::boot.ci(boot_thr,index = i,type = "perc")
+},boot_thr_R)
+
+names(boot_ci_R) = colnames(boot_thr_R$t)
+
+boot_ci_R = sapply(boot_ci_R,function(w) w$percent )
+
+#thr_point_R = getthr(R_min_SL_carrier_glmm)
+
+thr_point_R = rowMeans(Rayleigh_test_10_fold_thr)
+
+carriers = sapply(names(thr_point_R),function(w){substr(w,start = 11,stop=nchar(w))})
+
+plotdata_minimumSL_R = data.frame(minimumSL = thr_point_R,lwr = boot_ci_R[4,],hig = boot_ci_R[5,],carrier = carriers,Frequency = c("low","mid","low","mid","high","high","low","mid"))
+
+plotdata_minimumSL_R = plotdata_minimumSL_R[c(1,3,7,2,4,8,5,6),]
+
+plotdata_minimumSL_R$carrier = factor(plotdata_minimumSL_R$carrier,levels = plotdata_minimumSL_R$carrier)
+
+plotdata_minimumSL_R$Frequency = factor(plotdata_minimumSL_R$Frequency,levels = c("low","mid","high"))
+
+plotdata_minimumSL_R$Test = "Rayleigh"
+```
+
+ 
+
+
+
+## Results
+
+
+### Comparing F-test and Rayleigh test
+
+```{r ROC, echo=FALSE, error=FALSE, fig.cap=paste("Overall ROC curves for Rayleigh and F test, DeLong test gives a p-value=0.56 with null hypothesis: area under two ROC curves are the same "), fig.height=3.5, fig.width=7.5, message=FALSE, warning=FALSE}
+roc_Ray = roc(response = audi$SL>0, predictor = audi$Rayleigh,auc = T,ci=T,plot=F)
+
+roc_F = roc(response = audi$SL>0, predictor = audi$Ftest,auc = T,ci=T,plot=F)
+
+DeLong_test = roc.test(roc_Ray,roc_F)
+
+par(mfrow = c(1,2))
+plot(roc_F,main = "F-test")
+text(0.42,0.03,"AUC=0.837(.95CI:0.80-0.87)")
+plot(roc_Ray,main = "Rayleigh-test")
+text(0.42,0.03,"AUC=0.830(.95CI:0.80-0.86)")
+
+cutoff_maxsum_F = roc_F$thresholds[(roc_F$sensitivities+roc_F$specificities)==max(roc_F$sensitivities+roc_F$specificities)]
+
+cutoff_maxsum_Ray = roc_F$thresholds[(roc_Ray$sensitivities+roc_Ray$specificities)==max(roc_Ray$sensitivities+roc_Ray$specificities)]
+
+```
+
+
+ROC curves for overall sensitivity and specificity of the two tests were shown in Figure.2. DeLong test gave a p-value=0.56 with $H_0:$ there is no difference between two test's AUCs. Thus we did not have evidence that the overall performance of this two test differs on this particular data set.  For each specific carrier, DeLong test gave all p-value$>0.005$, we have no evidence that performance of these two tests differs on any of the 8 carriers (Figure. 2). This suggested there may not be performance difference between amplitude (F-test) and phase (RayLeigh-test) based EFR detection.
+
+
+```{r performances on carriers,echo=FALSE,warning=FALSE,message=FALSE,error=FALSE, fig.height=3, fig.width=5.5}
+#DeLong_subdata_test = lapply(DeLong_subdata,function(w){w$roc_test})
+
+
+
+#DeLong_subdata_test = matrix( unlist(DeLong_subdata_test),nrow=1)
+#row.names(DeLong_subdata_test) = "p-value"
+#colnames(DeLong_subdata_test) = carriers
+
+
+#knitr::kable(DeLong_subdata_test,caption = "DeLong test for H0: F-test and Rayleigh test result same AUC values on certain carrier, using subset of data divided by 8 carries",digits = 3, format = "latex", booktabs = TRUE)
+```
+
+
+```{r AUC for subset of data, echo=FALSE, error=FALSE, fig.cap=paste("AUC and corresponding DeLong 0.95 CI for each test on each carrier, p-value at the top of each carrier was for DeLong-test with H0: on such carrier, two test had same AUC value"), fig.height=3, fig.width=5.5, message=FALSE, warning=FALSE}
+carriers = unique(audi$Carrier)
+
+DeLong_subdata = lapply(carriers,function(carr,audi){
+   subdata = audi[audi$Carrier==carr,]
+   roc_Ray = roc(response = subdata$SL>0, predictor = subdata$Rayleigh,auc = T,ci=T,plot=F)
+
+   roc_F = roc(response = subdata$SL>0, predictor = subdata$Ftest,auc = T,ci=T,plot=F)
+
+   list(roc_Ray=roc_Ray,roc_F=roc_F,roc_test = roc.test(roc_Ray,roc_F)$p.value)
+   
+},audi)
+
+names(DeLong_subdata) = carriers
+
+
+CI_auc = lapply(DeLong_subdata,function(w){
+   temp = data.frame(matrix(0,2,4))
+   colnames(temp) = c("Test","lw","point","hi")
+   temp[1,2:4] = (as.matrix(w$roc_Ray$ci))
+   temp[1,1] = "Rayleigh"
+   
+   temp[2,2:4] = (as.matrix(w$roc_F$ci))
+   temp[2,1] = "F"
+   
+   return(temp)
+})
+
+CI_auc = Reduce(rbind,CI_auc)
+
+CI_auc$carrier[1:8*2] = carriers 
+CI_auc$carrier[1:8*2 - 1] = carriers
+CI_auc$Frequency = sapply(CI_auc$carrier,getFreq)
+
+CI_auc$carrier = factor(CI_auc$carrier,levels = plotdata_minimumSL_R$carrier)
+
+CI_auc$Frequency = factor(CI_auc$Frequency,levels = c("low","mid","high"))
+
+
+DeLong_subdata_test = lapply(DeLong_subdata,function(w){w$roc_test})
+
+DeLong_subdata_test = matrix( unlist(DeLong_subdata_test),nrow=1)
+row.names(DeLong_subdata_test) = "p-value"
+colnames(DeLong_subdata_test) = carriers
+
+
+DeLong_sub_data_p_values_on_graph = lapply(1:8,function(w,DeLong_subdata_test){
+   annotate("text",label =  as.character( signif( DeLong_subdata_test[w],2)),x=w,y=1.025)
+},DeLong_subdata_test) 
+
+#DeLong_sub_data_p_values_on_graph = Reduce("+",DeLong_sub_data_p_values_on_graph)
+
+
+pd <- position_dodge(.7)
+ggplot(data = CI_auc,mapping = aes(x=carrier,y=point,color=Frequency))+
+  geom_point(aes( shape = Test), position=pd,size=2.5)+
+  geom_errorbar(aes(ymin=lw, ymax=hi,group = Test), position=pd , width=.5) +
+  labs(y = "AUC",x="Carrier") +
+   theme(text = element_text(size=14), axis.text.x = element_text(angle=45, hjust=1,size = 12))+
+   DeLong_sub_data_p_values_on_graph[1]+
+   DeLong_sub_data_p_values_on_graph[2]+
+   DeLong_sub_data_p_values_on_graph[3]+
+   DeLong_sub_data_p_values_on_graph[4]+
+   DeLong_sub_data_p_values_on_graph[5]+
+   DeLong_sub_data_p_values_on_graph[6]+
+   DeLong_sub_data_p_values_on_graph[7]+
+   DeLong_sub_data_p_values_on_graph[8]+
+   annotate("text",label = "DeLong p-values:" ,x=2,y=1.07)
+
+```
+
+
+```{r ROC for subset of data, echo=FALSE, error=FALSE, fig.height=3, fig.width=5.5, message=FALSE, warning=FALSE}
+carriers_str = as.character( unique(audi$Carrier))
+
+paired_test_F = expand.grid( carriers_str,carriers_str,stringsAsFactors = F) %>%
+   as.matrix() %>%
+   apply(1,function(w,DeLong_subdata){
+      F_test_1 = DeLong_subdata[[w[1]]]$roc_F
+      F_test_2 = DeLong_subdata[[w[2]]]$roc_F
+      roc.test(F_test_1,F_test_2)$p.value
+   },DeLong_subdata)%>%
+   matrix(8,8)
+
+row.names(paired_test_F) <- colnames(paired_test_F) <- carriers_str
+
+
+paired_test_R = expand.grid( carriers_str,carriers_str,stringsAsFactors = F) %>%
+   as.matrix() %>%
+   apply(1,function(w,DeLong_subdata){
+      R_test_1 = DeLong_subdata[[w[1]]]$roc_Ray
+      R_test_2 = DeLong_subdata[[w[2]]]$roc_Ray
+      roc.test(R_test_1,R_test_2)$p.value
+   },DeLong_subdata)%>%
+   matrix(8,8)
+
+row.names(paired_test_R) <- colnames(paired_test_R) <- carriers_str
+
+```
+
+
+
+
+
+### EFR's Prediction Power
+
+F test result was consistent with SL results in 462 out of 672 trails (68.75%), while Rayleigh test was consistent in 482 trails (71.73%) when chose p-value<0.05 as detected EFR. Sensitivity, defined as rate of detecting EFR when such speech has a positive SL, was 63.39% for F-test and 67.85% for Rayleigh test. Specificity, defined as rate that speech had a positive SL when an EFR was detected for such speech, was 98.6% and 97.4% for F-test and Rayleigh test respectively (Table.1, first 3 columns). 
+
+
+
+The $\chi^2$ independent test between consistency (i.e. whether EFR made the same prediction of audibility with SL) and carrier whose $H_0$ was that consistency was independent with carrier had p-value 2.83e-8 and 1.83e-7 for F-test and Rayleigh test respectively. The $\chi^2$ independent test between consistency and frequency whose $H_0$ was that consistency was independent with frequency had p-value 3.26e-8 and 2.47e-8 for F-test and Rayleigh test respectively (See appendix Table. 1 to 4 for the contingency table). Due to multiple comparison, we need to adjust our p-value cut off for significant to $0.05/4=0.0125$, however we still have a strong evidence for that accuracy differ between carriers and frequency groups (Table.1, last 2 columns). From AUC of each carrier, we can observe that both F and Rayleigh test were good at high frequencies (carriers s and sh).
+
+```{r check correct rate independency with carrier and frequency,echo=FALSE,warning=FALSE,message=FALSE,error=FALSE, fig.height=3, fig.width=4.5}
+## add a bar plot if report is too short.
+
+chisq_carr_ray = chisq.test( xtabs(~Carrier+audibility_Ray_SL,data = audi))
+chisq_freq_ray = chisq.test( xtabs(~Freq+audibility_Ray_SL,data = audi))
+
+chisq_carr_F = chisq.test( xtabs(~Carrier+audibility_F_SL,data = audi))
+chisq_freq_F = chisq.test( xtabs(~Freq+audibility_F_SL,data = audi))
+
+```
+
+```{r performances at 0.05 ,echo=FALSE,warning=FALSE,message=FALSE,error=FALSE, fig.height=3, fig.width=4.5}
+performance_0.05 = matrix(0,2,5)
+row.names(performance_0.05) = c("F","Rayleigh")
+colnames(performance_0.05) = c("Overall","Sensitivity","Specificity","p-value Chisq test with carrier","p-value Chisq test with frequency")
+
+performance_0.05[1,1] = sum(audi$audibility_F_SL)/length(audi$audibility_F_SL)
+performance_0.05[2,1] = sum(audi$audibility_Ray_SL)/length(audi$audibility_Ray_SL)
+
+performance_0.05[1,2] = sum(audi$audibility_F[audi$audibility_SL])/sum(audi$audibility_SL)
+performance_0.05[2,2] = sum(audi$audibility_Ray[audi$audibility_SL])/sum(audi$audibility_SL)
+
+performance_0.05[1,3] = sum(audi$audibility_SL[audi$audibility_F])/sum(audi$audibility_F)
+performance_0.05[2,3] = sum(audi$audibility_SL[audi$audibility_Ray])/sum(audi$audibility_Ray)
+
+performance_0.05[1,4] = chisq_carr_F$p.value
+performance_0.05[2,4] = chisq_carr_ray$p.value
+
+performance_0.05[1,5] = chisq_freq_F$p.value
+performance_0.05[2,5] = chisq_freq_ray$p.value
+
+performance_0.05 = signif(performance_0.05,3)
+
+
+knitr::kable(performance_0.05,caption = "Performance summary of two tests using 0.05 as cut off and chisq independent test with H0: overall correct is independent with carrier/frequency",digits = 20, format = "latex", booktabs = TRUE)
+
+```
+
+
+
+### Minimum SL needed for EFR
+
+In total 10 models were constructed for each detecting method respectively (F and Rayleigh). The mixed effect model used same intercept among carriers, while slope depended on carriers was selected based on the least AIC rule (Table.2) for both of the two detecting method. ROC-AUC showed a good predicting power of this model (AUC=0.921(SD=0.0224),0.932(SD=0.0393) for F and Rayleigh).
+
+```{r collected AIC table for two, echo=FALSE,warning=FALSE,message=FALSE,error=FALSE, fig.height=3, fig.width=4.5}
+Collected_AIC_table = as.data.frame( AIC_table_EFR[,c(1:3,5)])
+Collected_AIC_table$deltaAIC_F = Collected_AIC_table$deltaAIC
+Collected_AIC_table$deltaAIC_Rayleigh = deltaAIC_R[order( as.numeric( deltaAIC))]
+Collected_AIC_table$deltaAIC=NULL
+
+
+knitr::kable(Collected_AIC_table,caption = "deltaAIC table for 10 candidate logistic regression models on SL and EFR detection",digits = 3,format = "latex", booktabs = TRUE)
+
+```
+
+```{r ROC-AUC for the glmm of F and Rayleigh,echo=FALSE, fig.cap=paste("10-fold corss validation obtained ROC for the mixed effect model predict EFR using SL and carrier with least AIC"), warning=FALSE,message=FALSE,error=FALSE, fig.height=3, fig.width=6}
+
+F_test_ROC = ggroc(F_test_10_fold_ROCs,aes="linetype", color="black") +
+   theme(legend.position="none",text = element_text(size=14))+  
+   geom_segment(aes(x = 1, xend = 0, y = 0, yend = 1), color="grey", linetype="dashed")+ 
+   ggtitle("F test")+
+   annotate("text", x=0.25, y=0.125, label= paste0("mean AUC=", signif( mean(AUC_F_test_10_fold),3),"\nSD=",signif(sd(AUC_F_test_10_fold),3)),size = 3.5)
+
+Rayleigh_test_ROC = ggroc(Rayleigh_test_10_fold_ROCs,aes="linetype", color="black") +
+   theme(legend.position="none",text = element_text(size=14))+  
+   geom_segment(aes(x = 1, xend = 0, y = 0, yend = 1), color="grey", linetype="dashed")+
+   ggtitle("Rayleigh test")+
+   annotate("text", x=0.25, y=0.125, label= paste0("mean AUC=", signif( mean(AUC_Rayleigh_test_10_fold),3),"\nSD=",signif(sd(AUC_Rayleigh_test_10_fold),3)),size = 3.5)
+
+
+grid.newpage()
+pushViewport(viewport(layout = grid.layout(1, 2)))
+print(F_test_ROC, vp = vplayout(1, 1))
+print(Rayleigh_test_ROC, vp = vplayout(1, 2))
+
+```
+
+Note that the chosen model included individual participant as random effect, suggest that there exist some level of correlation among the test result of one participant. The model also used grouping based on carrier rather than frequency, suggested that frequency is not enough for accurately predicting EFRs (i.e. EFRs may also depend on first and second volwel formants). However, all 8 carriers share the same intercept term, i.e. the baseline probability of having an EFR detected when $SL=0$ is probably not related with carriers. 
+
+```{r boot CI of threshold collected both,echo=FALSE, fig.cap=paste("SL thresholds that reach 0.5 chance of detecting EFR according to  least AIC model, points: point estimation of the threshold based on 10-fold cross validation, errorbars: 0.95 bootstrap CI"), warning=FALSE,message=FALSE,error=FALSE, fig.height=3, fig.width=5.5}
+plotdata_minimumSL$Test = "F"
+
+plotdata_minimumSL_both = rbind(plotdata_minimumSL,plotdata_minimumSL_R)
+
+pd <- position_dodge(.7)
+
+ggplot(data = plotdata_minimumSL_both,mapping = aes(x=carrier,y=minimumSL,color=Frequency))+
+  geom_point(aes( shape = Test), position=pd,size=2.5)+
+  geom_errorbar(aes(ymin=lwr, ymax=hig,group = Test), position=pd , width=.5) +
+  labs(y = "SL threshold",x="Carrier") +
+   theme(text = element_text(size=14), axis.text.x = element_text(angle=45, hjust=1,size = 12))
+```
+
+
+Figure.3 showed the model predicted SL threshold and its corresponding bootstrap 0.95 CI for both methods. Noticed that all CIs are above 0. This may suggest that EFR based method was less sensitive than known SL method (i.e. a positive SL was needed to reach 0.5 chance of detecting an EFR). Further, SL threshold dependents on carriers, though I observed a general trend that high frequency group had lower threshold than other two. Differences on threshold between different carriers needed further investigations. Results in this analysis also showed the difference can be large, in terms of point estimations of F-test, largest difference was between carrier s (6.030 .95CI=(4.08,8.00)) and carrier /a/F1 (33.35, .95CI=(26.12,41.46)) for amplitude method , point estimation difference can be large as 27.32 unit of SL given our surveyed SL has range of (-13.8,54.9). Threshold for detecting an EFR based on phase (Rayleigh-test) was generally similar with those based on amplitude (F-test) when both choose 0.05 as cut off (Figure.3). Numeric point estimation and 0.95 bootstrap CI can be found in appendix Table.5.  
+
+
+The full estimated response curve (i.e. probability of detecting a EFR as a function of SL) based on average prediction of 10-fold cross validation was given in Figure.5. 
+
+
+```{r response plot F-test ,echo=FALSE, warning=FALSE,message=FALSE,error=FALSE, fig.height=4, results='hide',fig.width=6}
+
+
+SL_range = seq(-13.8,54.9,by=0.01)
+
+carriers = factor(carriers,levels = plotdata_minimumSL$carrier)
+
+SL_predicting = expand.grid(SL_range,carriers)
+
+colnames( SL_predicting) = c("SL","Carrier")
+SL_predicting$Participant = audi$Participant[1]
+
+#newpred = function(.){
+#   predict(.,newdata = SL_predicting,re.form = NA,type="response")
+#}
+
+#boot_resp = bootMer(min_SL_carrier_glmm,newpred,nsim = 20,.progress = "none")
+
+#boot_pred_CI = lapply(1:nrow(SL_predicting),function(i,boot_resp){
+#   boot::boot.ci(boot_resp,type = "perc",index = i)
+#},boot_resp) %>%
+#   lapply(function(w) w$percent )
+
+#boot_pred_CI = Reduce(rbind,boot_pred_CI)
+
+
+#SL_predicting$predict = predict(min_SL_carrier_glmm,newdata = SL_predicting,re.form = NA,type = "response")
+
+
+CV_predict_F = sapply(F_test_10_fold_CV$models,function(mod,newdata){
+   predict(mod$model,newdata = newdata,re.form = NA)
+},newdata = SL_predicting) %>%
+   rowMeans() %>%
+   invlogit()
+
+
+
+SL_predicting$predict = CV_predict_F
+
+SL_predicting$Frequency = sapply(SL_predicting$Carrier,getFreq)
+
+SL_predicting$Frequency = factor(SL_predicting$Frequency,levels = c("low","mid","high"))
+
+#SL_predicting$lw = boot_pred_CI[,4]
+#SL_predicting$hg = boot_pred_CI[,5]
+
+
+
+F_response = 
+   ggplot(data = SL_predicting,aes(x=SL,y=predict,color=Carrier))+
+  # geom_ribbon(aes(ymin=SL_predicting$lw, ymax=SL_predicting$hg),linetype = 0,alpha = 0.13)+
+   geom_line(aes(linetype = Frequency),size=0.9)+
+   geom_hline(yintercept = 0.5)+
+   theme(text = element_text(size=14))+
+   labs(y="Predicted Detection Rate, F-test")
+
+```
+
+
+```{r response plot Rayleigh-test ,echo=FALSE, warning=FALSE,message=FALSE,error=FALSE,results='hide', fig.height=4, fig.width=6}
+
+SL_predicting_R = SL_predicting[,1:3]
+
+#newpred = function(.){
+#   predict(.,newdata = SL_predicting_R,re.form = NA,type="response")
+#}
+
+
+#boot_resp_R = bootMer(R_min_SL_carrier_glmm,newpred,nsim = 20,.progress = "none")
+
+#boot_pred_CI_R = lapply(1:nrow(SL_predicting_R),function(i,boot_resp_R){
+#  invisible( boot::boot.ci(boot_resp_R,type = "perc",index = i))
+#},boot_resp_R) %>%
+#   lapply(function(w){ 
+#      if (is.null(w$percent)) return(NA)
+#      w$percent 
+#      
+#      })
+
+#boot_pred_CI_R = Reduce(rbind,boot_pred_CI_R)
+
+CV_predict_R = sapply(Rayleigh_test_10_fold_CV$models,function(mod,newdata){
+   predict(mod$model,newdata = newdata,re.form = NA)
+},newdata = SL_predicting_R) %>%
+   rowMeans() %>%
+   invlogit()
+
+#SL_predicting_R$predict = predict(R_min_SL_carrier_glmm,newdata = SL_predicting,re.form = NA,type = "response")
+SL_predicting_R$predict = CV_predict_R
+
+SL_predicting_R$Frequency = sapply(SL_predicting_R$Carrier,getFreq)
+
+SL_predicting_R$Frequency = factor(SL_predicting_R$Frequency,levels = c("low","mid","high"))
+
+#SL_predicting_R$lw = boot_pred_CI_R[,4]
+#SL_predicting_R$hg = boot_pred_CI_R[,5]
+
+#SL_predicting_R$lw[is.na(SL_predicting_R$lw)]=SL_predicting_R$predict[is.na(SL_predicting_R$lw)]
+
+#SL_predicting_R$hg[is.na(SL_predicting_R$hg)]=SL_predicting_R$predict[is.na(SL_predicting_R$hg)]
+
+
+Rayleigh_response = 
+   ggplot(data = SL_predicting_R,aes(x=SL,y=predict,color=Carrier))+
+   #geom_ribbon(aes(ymin=lw, ymax=hg),linetype = 0,alpha = 0.13)+
+   geom_line(aes(linetype = Frequency),size=0.9)+
+   geom_hline(yintercept = 0.5)+
+   theme(text = element_text(size=14))+
+   labs(y="Predicted Detection Rate, Rayleigh-test")
+
+```
+
+
+
+```{r response plot both tests ,echo=FALSE, fig.cap=paste("Predicted probability of detecting a EFR as a function of SL, calculate as average of 10 cross validations on logit scale"), warning=FALSE,message=FALSE,error=FALSE, fig.height=8, fig.width=6}
+grid.newpage()
+pushViewport(viewport(layout = grid.layout(2, 1)))
+print(F_response, vp = vplayout(1, 1))
+print(Rayleigh_response, vp = vplayout(2, 1))
+```
+
+
+
+
+## Discussion
+
+### Cut off p-values for Detection
+
+By using the ROC curve, we may find some "better" cut off values than conventional 0.05. For example, cut off value that maximized sum of sensitivity and specificity was 0.0898 for F test and 0.0795 for Rayleigh test. However in reality we may not have the ability to obtain the better cut-off values from EFR data itself. If we want to control the sample bias i.e. more likely to detect an EFR when using carrier `s`, it is beneficial to pre-train the cut-off using benchmark method like SL before conducting further research based on EFR results.  
+
+### Performance of EFR as an Indicator of Audibility, some Implication for Further Research
+
+Overall, both amplitude (F-test) and phase (Rayleigh-test) based EFR in predicting audibility based on the overall AUC values (0.837 and 0.830). However, when using 0.05 as cut off, both method tend to have relative low sensitivity (0.634 and 0.679). This is possible the cause of a relative poor overall consistent rate (0.688 and 0.717) with traditional SL based method. EFR may not be a good choice when high sensitivity of detection is needed. But relative high specificity may also because the imbalanced experimental design I will cover later.
+
+Performance of both test depended on carriers and their frequency, general trend was carriers that had higher frequency had a lower threshold for a detection thus higher sensitivity. This unbiased nature should be treated with carefulness when comparing the result of EFR from different carriers, as we saw, the difference between thresholds can be large. For same individual, detection threshold for different carriers had correlation. This correlation needs to be accounted when conducting research based on EFR. 
+
+### Possible Improvement in Analysis and Experimental Design
+
+There were several parts can be improved but relies on experimental design. First of all, I calculated both specificity and sensitivity. On this data set, specificity is relatively high (0.986, 0.974 for F and Rayleigh) when using 0.05 as cut off for EFR detection. This may indicate the method was specific but also can because of the imbalanced design focused on addressing the SL threshold of detecting. There were 560 audible speech based on SL, which is 83.3% of the full sample size. Thus even if the test method gave results that all speeches were audible, specificity is still as high as 0.833. The specificity maybe over estimated. To address this question, researchers should conduct more experiment at the region that SL is negative and test whether an EFR can be detected.
+
+I used bootstrap for confidence interval and cross validation to make and evaluate the performance of point estimations. However there was no theoretical guarantee in finite sample case for both of the methods. For bootstrap, repeat sampling from a biased sample will still be biased and the empirical sample distribution estimated by bootstrap will be off. The best way of solving this problem was to repeat more trails and assess the experimental design for possible bias on equipment, population tested, etc.
+
+One of the key assumption in the third part of the analysis was different individual's results were independent. This assumption could be violated if all the experiments were done using the same equipment for a given carrier/frequency. This assumption should be assessed based on the experimental design and repeat from other labs. 
+
+
+\setcounter{figure}{0}
+\setcounter{table}{0}
+
+## End of the Main Report
+
+\FloatBarrier 
+\pagebreak
+## Appendix
+
+
+### Contingency tables
+
+There are 4 contifency tables used to test the independency between EFR prediction ability of SL and carrier/frequency. From Table.1-Table.4
+
+```{r cont table 1,echo=FALSE,warning=FALSE,message=FALSE,error=FALSE, fig.height=3, fig.width=4.5}
+## add a bar plot if report is too short.
+
+xtable_carr_ray = ( xtabs(~Carrier+audibility_Ray_SL,data = audi))
+xtable_freq_ray = ( xtabs(~Freq+audibility_Ray_SL,data = audi))
+
+xtable_carr_F = ( xtabs(~Carrier+audibility_F_SL,data = audi))
+xtable_freq_F = ( xtabs(~Freq+audibility_F_SL,data = audi))
+
+knitr::kable(xtable_carr_ray,caption = "Contingency table between consistency (with SL prediction) and carrier, Rayleigh test",digits = 20, format = "latex", booktabs = TRUE)
+
+```
+
+```{r cont table 2,echo=FALSE,warning=FALSE,message=FALSE,error=FALSE, fig.height=3, fig.width=4.5}
+knitr::kable(xtable_carr_F,caption = "Contingency table between consistency (with SL prediction) and carrier, F test",digits = 20, format = "latex", booktabs = TRUE)
+
+```
+
+
+```{r cont table 3,echo=FALSE,warning=FALSE,message=FALSE,error=FALSE, fig.height=3, fig.width=4.5}
+knitr::kable(xtable_freq_ray,caption = "Contingency table between consistency (with SL prediction) and frequency, Rayleigh test",digits = 20, format = "latex", booktabs = TRUE)
+
+```
+
+
+```{r cont table 4,echo=FALSE,warning=FALSE,message=FALSE,error=FALSE, fig.height=3, fig.width=4.5}
+knitr::kable(xtable_freq_F,caption = "Contingency table between consistency (with SL prediction) and frequency, F test",digits = 20, format = "latex", booktabs = TRUE)
+
+```
+
+
+
+
+
+### Thresholds
+
+Numerical result for threshold are given in Table.5. 
+
+```{r thrs numerical,echo=FALSE,warning=FALSE,message=FALSE,error=FALSE, fig.height=3, fig.width=4.5}
+
+thrs_num = plotdata_minimumSL_both
+row.names(thrs_num) = NULL
+colnames(thrs_num) = c("threshold", "0.95CI lower" , "0.95CI upper" , "carrier" ,"Frequency", "Test")
+
+thrs_num = thrs_num[,c(4,6,1,2,3,5)]
+
+knitr::kable(thrs_num,caption = "Numerical Estimation of SL thresholds for detecting EFR and their 0.95 bootstrap CIs",digits = 4, format = "latex", booktabs = TRUE)
+
+
+
+```
+
+\FloatBarrier
+\pagebreak
+
+### Cross validation for mix effect model
+
+Cross validation function was not yet implemented in package `lme4` but it is relatively easy to implement with the help of `caret`
+
+```{r CV function echo, echo=TRUE, warning=FALSE,message=FALSE,error=FALSE, fig.height=3, fig.width=5.5}
+
+require(caret)
+CV_glmer = function(obj,fold){
+   response = as.character( obj@call$formula[2]) # get the name of response
+   data_ = obj@frame # get the data
+   family_ = as.character( obj@call$family) # get family
+   
+   folds = createFolds(y=data_[,response]
+                       ,k=fold) # create a fold
+   
+   formular = obj@call$formula # get formular
+   
+   retrain = lapply(1:fold,function(i,folds,
+                                    formular,
+                                    data_,
+                                    response,
+                                    family_){
+                              #start ith cross validation 
+      
+                              # train with training set:      
+                              retrained_model = glmer(formular,
+                                    data = data_[-folds[[i]],],
+                                    family = family_) 
+                              
+                              
+                              # predict the testing:
+                              pred_retrain = predict(retrained_model,
+                              newdata = data_[folds[[i]],],
+                              type = "response")
+                              roc_data = 
+                                 data.frame(resp =
+                                               data_[folds[[i]],response],
+                                            pred = pred_retrain)
+
+                              # return the retrained model and prediction:
+                              return(list(
+                                 model = retrained_model,
+                                 roc_data=roc_data)) 
+               },folds,formular,data_,response,family_) # end the lapply
+   
+    ## do ROC
+    roc_res = lapply(retrain,function(w){
+                              roc(w$roc_data,
+                                  response = "resp",
+                                  predictor = "pred")
+       }) # get ROC using the test sample
+   
+   return(list(ROC=roc_res,models = retrain)) # return result
+   
+}
+```
+
+
+
+\pagebreak
+## References
+
+Angelo Canty and Brian Ripley (2019). boot: Bootstrap R (S-Plus) Functions. R package version 1.3-23.
+
+Davison, A. C. & Hinkley, D. V. (1997) Bootstrap Methods and Their Applications. Cambridge University Press, Cambridge. ISBN 0-521-57391-2
+
+DeLong, Elizabeth R., David M. DeLong, and Daniel L. Clarke-Pearson. "Comparing the areas under two or more correlated receiver operating characteristic curves: a nonparametric approach." Biometrics (1988): 837-845.
+
+Douglas Bates, Martin Maechler, Ben Bolker, Steve Walker (2015). Fitting Linear Mixed-Effects Models Using `lme4`. Journal of Statistical Software, 67(1), 1-48. doi:10.18637/jss.v067.i01.
+
+Max Kuhn. Contributions from Jed Wing, Steve Weston, Andre Williams, Chris Keefer, Allan Engelhardt, Tony Cooper, Zachary Mayer, Brenton Kenkel, the R Core Team, Michael Benesty, Reynald Lescarbeau, Andrew Ziem, Luca Scrucca, Yuan Tang, Can Candan and Tyler Hunt. (2019). `caret`: Classification and Regression Training. R package version 6.0-84. https://CRAN.R-project.org/package=caret
+
