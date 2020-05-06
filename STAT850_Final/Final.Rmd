@@ -1,0 +1,568 @@
+---
+title: "Final Project STAT 850"
+author: "Yunyi SHEN"
+date: "4/12/2020"
+header-includes:
+   - \usepackage{amsmath}
+   - \usepackage{amsthm}
+   - \usepackage{siunitx}
+   - \usepackage{amssymb}
+   - \usepackage{geometry}
+   - \usepackage{longtable}
+   - \usepackage{fancyhdr}
+   - \usepackage{chngcntr}
+   - \usepackage{caption}
+   - \pagestyle{fancy}
+   - \newtheorem{hyp}{Hypothesis}
+   - \fancyhead{} 
+   - \fancyhead[RO,LE]{Yunyi SHEN}
+   - \geometry{letterpaper,scale=0.7}
+   - \linespread{1.5}
+   - \counterwithin*{hyp}{subsubsection}
+   - \captionsetup{width=6in}
+   - \usepackage{placeins}
+   - \usepackage{booktabs}
+   - \counterwithin*{hyp}{subsubsection}
+   
+output: pdf_document
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+require(ggplot2)
+require(reshap2)
+require(grid)
+require(dplyr)
+
+vplayout <- function(x, y) viewport(layout.pos.row = x, layout.pos.col = y)
+getVIF = function(predictors,dataset){
+   only.predictors = dataset[,predictors]
+
+   VIF = lapply(predictors,function(ww){
+               as.formula(paste(ww,"~."))
+            }) %>%
+         lapply(lm,data = only.predictors) %>%
+         lapply(summary) %>%
+         sapply(function(w){1/(1-w$r.squared)})
+   names(VIF) = predictors
+   return(VIF)
+}
+
+CV_glm = function(obj,fold){
+   require(caret)
+   require(pROC)
+   formular = formula(obj)
+   response = as.character( formular[[2]])
+   data_ =  obj$data # get the data
+   rownames(data_) <- NULL
+   family_ = family(obj)[[1]] # get family
+   
+   folds = createFolds(y=data_[,response]
+                       ,k=fold) # create a fold
+   
+   
+   retrain = lapply(1:fold,function(i,folds,
+                                    formular,
+                                    data_,
+                                    response,
+                                    family_){
+                              #start ith cross validation 
+      
+                              # train with training set:      
+                              retrained_model = glm(formular,
+                                    data = data_[-folds[[i]],],
+                                    family = family_) 
+                              
+                              
+                              # predict the testing:
+                              pred_retrain = predict(retrained_model,
+                              newdata = data_[folds[[i]],],
+                              type = "response")
+                              roc_data = 
+                                 data.frame(resp =
+                                               data_[folds[[i]],response],
+                                            pred = pred_retrain)
+
+                              # return the retrained model and prediction:
+                              return(list(
+                                 model = retrained_model,
+                                 roc_data=roc_data)) 
+               },folds,formular,data_,response,family_) # end the lapply
+   
+    ## do ROC
+    roc_res = lapply(retrain,function(w){
+                              roc(w$roc_data,
+                                  response = "resp",
+                                  predictor = "pred")
+       }) # get ROC using the test sample
+   
+   return(list(ROC=roc_res,models = retrain)) # return result
+}
+
+
+set.seed(42)
+
+library(dplyr)
+library(lme4)
+library(MASS)
+
+```
+
+```{r echo=FALSE,warning=FALSE,message=FALSE,error=FALSE, fig.height=3, fig.width=6}
+walleye <- read.csv("wae_yoy_lake_attributes.csv") #%>% na.omit()
+walleye <- walleye[!is.na(walleye$wbic),]
+walleye$clarity[walleye$clarity==""] <- NA
+walleye$clarity <- as.factor(as.character(walleye$clarity))
+
+walleye$lake_type[walleye$lake_type==""] <- NA
+walleye$lake_type <- as.factor(as.character(walleye$lake_type))
+
+
+```
+
+# Abstract
+
+We analyzed walleye recruitment data collected by WDNR using electrofishing method. We used young of the year (YOY) catch per meter and juvenile catch per meter as density indeces to represent recruitment and juvenile/YOY ratio as an index of YOY survival. We estimated the yearly trend using mixed effect linear regression using YOY, juvenile catch per meter and juvenile/YOY ratio as response and year as predictor, with lake as random intercept. The response was square rooted to stablize the residual. Result showed no significant trend in either juvenile catch per meter ($\beta=0.00046$, 0.95CI$=[-0.00037,0.0013]$), or juvenile/YOY ratio ($\beta=0.463$, 0.95CI$=[-0.014,0.031]$). For YOY catch per meter, there was a significant declining trend ($\beta=-0.0015$, 0.95CI$=[-0.0028,-0.00017]$), but the slope was small (1.37\% of the grand mean of response (0.108)), further survey should be conducted to confirm this trend in long term. Random effect of lake was only significant in YOY catch at 0.05 level ($\sigma=0.041$,0.95CI$=[0.026,0.055]$). Temperoal auto-correlation function estimated from yearly average showed no strong autocorrelation among years. Then we conduct linear regression using YOY catch per meter, juvenile catch per meter and juvenile YOY ratio as response, 10 lake characterstics as potential predictor and year as potential random effect. We take square root to stablize the residual. All possible models with and without year as random effect were fitted and the one with least AIC were used. The least AIC model for YOY catch per meter had a significant yearly variance in 0.95 level (0.95 CI of standard diviation:$[0.018,0.046]$). YOY per meter showed a positive relationship with lake size ($\beta=0.027$, 0.95CI$=[0.017,0.036]$). The least AIC model for juvenile density had predictor of temprature at survey and size of the lake without year as random effect. Temprature was positive related with density ($\beta=0.020$, 0.95CI$=[0.010,0.030]$) as well as lake size ($\beta=0.020$, 0.95CI$=[0.014,0.034]$).  The least AIC model for Juvenile/YOY ratio had predictor of lake size and ice duraions and without year as random effect. The size was not significant at 0.05 level ($\beta=-0.146$,0.95CI$=[-0.345,0.053]$) while ice duration was positive correlated with Juvenile/YOY ratio ($\beta=0.182$,0.95CI$=[0.00608,0.359]$). To construct a predictive model may be used in management. We apply a threshold of 6.2 YOY per km as "recruitment success" follow WDNR and conduct logistics regression using recruitment success as response and lake characteristics as potential predictors to construct predictive models. All possible models were fit and the least AIC model was used for prediction. The least AIC model had tempture survey, size and ice duration as its predictor. Recruitment success probability showed a positive relationship with lake size a positive relationship with temperture survey and a negative relationship with ice duration however ice duration was not significant in the model. 10-fold cross validation with ROC-AUC valued showed a moderate power of prediction, average AUC was 0.721 with sd 0.096. 
+
+
+# Background
+
+Walleye (*Sander vitreus*) is an important game fish species native to northern United State and Canada. Given its great importance in Wisconsin's natural resources the Wisconsin Department of Natural Resources (WDNR) had active management on this species in the Ceded Territory since 1985. However population of walleye declined in the past decade in many lakes of Wisconsin while the reson remained unknown. Managers were particularly interested in finding the reason why walleye population in the state of Wisconsin declined recently. Recruitement was one of the important parts in population mintainance. Researchers proposed hypothesis that decline of walleye population was due to decline of recruitment. Since 1990, state and tribal fishery biologists have conducted fall surveys to estimate walleye recruitment by measuring young of the year (YOY) and juvenile catch per effort in the Ceded Territory. Various lake attributes were also collected when conducting the survey to assess the relationship between recruitment and water body charasteristics. The objective of this analysis was to confirm whether there was a decline trend in walleye recruitment, and find relationship between walleye recruitment indeces and lake characteristics, as well as finding predictive model for actively manage walleye population in lakes of the state of Wisconsin. 
+
+
+
+# Method
+
+## Data 
+
+WDNR selects a number of lakes each year using a stratified random design based on size, historic level of tribal harvest, and walleye recruitment source to conduct electric fishing survey. Entire shore line or randomly chosen transects of lakes were sampled using a 230-V AC electrofishing boat for one night. Walleye was aged based on their size and size distribution in model lakes. Catch per effort (meter survey) was used as indeces of fish density. We mainly focus on young of the year (YOY) and juvenile densities. 
+
+## Assess Temporal Trend of Walleye Recruitment
+
+To account for the survey intensity and size differences of each lake, we normalized the catch of YOY and juvenile by distance surveyed to catch per meter survey. We conducted linear regression using YOY/juvenile catch per meter survey as response and year as predictor to evaluate the temporal trend of YOY density as an index of recruitment. Lake was used as reandom intercept. We take squart root to stablize the residual of catch per meter. T test on slope was used to assess the existence of the trend. 
+
+Another part of dynamics, i.e. YOY survival cannot be directly analyzed using the unmarked design since we cannot track cohort. However we can still provide some insight into whether survival of YOY to juvenile is stationary over time because under the stationary hypothesis (i.e. survival did not change through year), the ratio between juvenile density and YOY density (juv/yoy ratio) should be stationary. Again, this was only true when population is stationary, so we were looking for evidence against this hypothesis. We used a linear regression between the juvenile/YOY catch ratio and year using only data with at least 1 YOY catch. We again take square root to stablize the residual and lake was used as random intercept.
+
+We evaluated temporal auto-correlation of state wide annual average catch using auto-correlation function and 0.4 as cutoff values.
+
+## Relationship between Recruitment and Water Body Characterastics
+ 
+In this part we focused on understand the variability of recruitment. Again two aspect of recruitment were analyzed in this report, namingly YOY/juvenile density and juvenile YOY ratio as a index of YOY survival under stationary assumption. 
+
+In total 9 predictors on water body and 1 on survey as well as year were considered, they were size of lake (in acre `size_acre`, continuous), maximum depth of lake (in meter, `max_depth_m`, continuous), type of lake based on the water resouces (`lake_type`, can be Seepage/ Drainage/Spring, catagorical), clarity based on human assessment (`clarity`, 4 level catagorical), Secchi index for clarity, defined as size of disk cna be seen from satellite (in meter, `Secchi_satellite`, continuous), Conductance (in $mSm/cm$, `Conductance`, continuous), growing-degree days with respect to the base temperature defined as 5 degree Celsius (`gdd_wtr_5c`, continuous), mean water temperature at the bottom of the lake in June (in C `mean_bot_jun`, continuous), ice duration (in days `ice_duration_days`, continuous), tempture when conducted the survey (in F, `temp_survey`), year (`year`). VIF of continuous predictors were calculated. Continuous predictors were normalized to Z-score, catagorical variables were converted to dummy variables. Again we took square root of response to stablize the variance. Models were fitted with and without year as a random effect on intercept. We exclude the data point with clarity as "very low" as we only have one data point.
+
+We used linear regression to find predictive model on two indeces. All possible models were fitted (with and without year as random effect) and the ones with least AIC were chosed. 
+
+## Predict Recruitment Success
+
+For management purpose, WDNR classify YOY density > 6.2/$km^2$ as "successful" (Hansen et al. 2015), we also target on predicting this. We used a logistic regression with only water body characteristics as potential predictors because when predicting success, we may not been able to know the underlaying random effect of that year. Again all possible models were fitted and the ones with least AIC were chosed, model was tested using 10-fold cross validation and ROC-AUC method. 
+
+# Results
+
+## Lack of Strong Temporal Trend and Auto-correlation of Walleye Recruitment
+
+```{r assess trent, echo=FALSE, error=FALSE, fig.cap=paste("Population trend of YOY and juvenile walleye, 1990-2014, solid line was trend line due to linear regression"), fig.height=3, fig.width=8, message=FALSE, warning=FALSE}
+yoy_trend_temp <- lm(sqrt(yoy_per_meter)~year,data = walleye)
+juv_trend_temp <- lm(sqrt(juv_catch/meters_surv)~year,data = walleye)
+
+yoy_trend_poisson <- glm(yoy_catch~year+offset(log(meters_surv)),data = walleye,family = quasipoisson())
+juv_trend_poisson <- glm((juv_catch/meters_surv)~year,data = walleye,family = quasipoisson(),weights = meters_surv)
+
+yoy_trend_nb <- glm.nb(yoy_catch~year+offset(log(meters_surv)),data = walleye)
+
+
+yoy_trend_temp_lmer <- lmer(sqrt(yoy_per_meter)~year+(1|lake_name),data = walleye)
+juv_trend_temp_lmer <- lmer(sqrt(juv_catch/meters_surv)~year+(1|lake_name),data = walleye)
+
+
+par(mfrow=c(1,2)) 
+plot(sqrt(yoy_per_meter)~year,data = walleye,cex = 0.8,ylab = "square root yoy catch per meter")
+abline(yoy_trend_temp$coefficients)
+
+plot(sqrt(juv_catch/meters_surv)~year,data = walleye,cex = 0.8,ylab = "square root juv catch per meter")
+abline(juv_trend_temp$coefficients)
+
+k <- dev.off()
+
+
+juv_yoy_ratio <- lm(sqrt(juv_catch/yoy_catch)~year,data = walleye[walleye$yoy_catch>0,])
+
+juv_yoy_ratio_lmer <- lmer(sqrt(juv_catch/yoy_catch)~year+(1|lake_name),data = walleye[walleye$yoy_catch>0,])
+
+```
+
+
+
+
+Diagnositc showed no much violation of model assumptions of linear regression after take square root of the catch per meter. Linear regression between juvenile and year showed (the square root of) juvenile catch per meter did not change through year in a linear fashion ($\beta=0.00046$, 0.95CI$=[-0.00037,0.0013]$) (Fig.1). Variation on lake was not sigificant at 0.05 level, ($\sigma=0.013$,0.95CI$=[0,0.466]$). For YOY, regression analysis showed YOY catch per meter had siginificant declining trand with year ($\beta=-0.0015$, 0.95CI$=[-0.0028,-0.00017]$). However, the slope estimation was $-0.00148$, which was 1.37\% of the grand mean of response (0.108). Also the residual standard deviation was higher than the slope $\sigma=0.062$, 0.95CI$=[0.053,0.071]$, year cannot explain most of the variation in YOY density (Fig.1). Variance on lake was significan at 0.05 level ($\sigma=0.041$,0.95CI$=[0.026,0.055]$). A longer survey was needed to confirm the real existence of this trend. The temporal trend of walleye recrutment measured by YOY and juvenile density showed either no or small declining trend which need longer survey effort.
+
+The (square root of) juv/yoy ratio showed no significant year dependency ($\beta=0.463$, 0.95CI$=[-0.014,0.031]$). So we did not have much evidence against the stationary hypothesis, i.e. our data had no conflict with argument that average YOY to juvenile survival rate changed in the survey years. Variation on lake was not significant at 0.05 level ($\sigma=0.070$,0.95CI$=[0,0.47]$).
+
+ACF of (square root of) state wide average of all three measurements showed no correlation greater than 0.4 for lag from 1 to 12. We may conclude there was no strong temproal auto-correlation in state wide average of recruitment (Fig.2).
+
+```{r acf, echo=FALSE, error=FALSE,  fig.height=7, fig.width=8, message=FALSE, warning=FALSE, fig.cap=paste("Autocorrelation functions with year lag of YOY and juvenile walleye, 1990-2014, solid line was trend line due to linear regression")}
+walleye_temp <- walleye
+walleye_temp$juv_per_meter <- walleye_temp$juv_catch/walleye_temp$meters_surv
+walleye_temp$juv_yoy_ratio <- walleye_temp$juv_catch/walleye_temp$yoy_catch
+walleye_temp$juv_yoy_ratio[walleye_temp$juv_yoy_ratio==Inf] <- NA
+yoy_average <- aggregate(walleye_temp,by=list(walleye_temp$year),FUN=mean,na.rm = T)
+
+par(mfrow=c(3,1))
+acf(sqrt(yoy_average$yoy_per_meter),main="YOY catch per meter")
+acf(sqrt(yoy_average$juv_per_meter),main="Juvenile catch per meter")
+acf(sqrt(yoy_average$yoy_per_meter),main="Juvenile YOY ratio")
+
+```
+
+## Variability of Recruitment 
+
+For YOY density, in total 1024 models were fitted and the one with least AIC used predictor lake size as its only fixed effect as well as year as random effect (Table.1). There was a significant yearly variance in 0.95 level ($\sigma_{year}=0.031$ 0.95 CI $[0.018,0.046]$). YOY per meter showed a positive relationship with lake size ($\beta=0.027$, 0.95CI$=[0.017,0.036]$). Residual had a relative large standard diviation compare with year effect (0.064, 0.95CI$=[0.058,0.72]$). There exist a large variance we may not able to capture using current available redictors. 
+
+Least AIC model for juvenile density had predictor of temprature at survey and size of the lake (Table.2). Temprature was positive related with density ($\beta=0.020$, 0.95CI$=[0.010,0.030]$) as well as lake size ($\beta=0.020$, 0.95CI$=[0.014,0.034]$). $R^2$ of least AIC model was 0.186. Most of the variance cannot be explained using predictors we have.
+
+Least AIC model for juvenile/YOY ratio had predictor of lake size and ice duraions and without year as random effect (Table.3). The size was not significant at 0.05 level ($\beta=-0.146$,0.95CI$=[-0.345,0.053]$) while ice duration was positive correlated with juvenile/YOY ratio ($\beta=0.182$,0.95CI$=[0.00608,0.359]$). However the $R^2$ of this model was only 0.0381. Most of the variance cannot be explained using predictors we have.
+
+
+
+```{r understand variance of recruitment , echo=FALSE,warning=FALSE,message=FALSE,error=FALSE, fig.height=6, fig.width=6}
+walleye_reduced_data <- walleye[,-c(2,4:5,7,16)]
+walleye_reduced_data$juv_yoy_ratio <- walleye$juv_catch/walleye$yoy_catch
+walleye_reduced_data$wbic <- as.factor(walleye_reduced_data$wbic)
+
+#yoy_full <- lm(sqrt(yoy_per_meter)~.,data = walleye_reduced_data)
+
+cont_pred <- c("temp_survey","size_acre",#"year",
+               "max_depth_m","Secchi_satellite" ,
+               "Conductance","gdd_wtr_5c","ice_duration_days")
+
+walleye_reduced_data[,cont_pred] <- lapply(walleye_reduced_data[,cont_pred],function(w) (w-mean(w,na.rm=T))/sd(w,na.rm = T))
+
+walleye_reduced_data$year <- as.factor( walleye$year)
+
+VIF_cont <- getVIF(cont_pred,walleye_reduced_data)
+
+
+
+Include_or_not <-   do.call(expand.grid,lapply(1:(ncol(walleye_reduced_data)-4),function(x)c(FALSE,TRUE))) %>% as.matrix()
+
+all_predictors <- colnames(walleye_reduced_data)[-c(1,2,4,13)]
+
+formulea_year <- lapply(1:nrow(Include_or_not),
+                   function(i,Include_or_not,all_predictors){
+                  paste(c("sqrt(yoy_per_meter)~(1|year)",
+                          all_predictors[Include_or_not[i,]]),collapse = "+")
+},Include_or_not,all_predictors)
+
+
+formulea_none <- lapply(1:nrow(Include_or_not),
+                   function(i,Include_or_not,all_predictors){
+                  paste(c("sqrt(yoy_per_meter)~1",
+                          all_predictors[Include_or_not[i,]]),collapse = "+")
+},Include_or_not,all_predictors)
+
+
+
+yoy_all_lms_year <- lapply(formulea_year,lmer,data = walleye_reduced_data[walleye_reduced_data$clarity!="Very Low",])
+
+yoy_all_lms_none <- lapply(formulea_none,lm,data = walleye_reduced_data[walleye_reduced_data$clarity!="Very Low",])
+
+yoy_AICs_year <- sapply(yoy_all_lms_year,AIC)
+yoy_AICs_none <- sapply(yoy_all_lms_none,AIC)
+
+
+yoy_least_aic_year <- which(yoy_AICs_year==min(yoy_AICs_year))
+yoy_least_aic_model_year <- yoy_all_lms_year[[yoy_least_aic_year]]
+
+yoy_least_aic_none <- which(yoy_AICs_none==min(yoy_AICs_none))
+yoy_least_aic_model_none <- yoy_all_lms_none[[yoy_least_aic_none]]
+
+
+formulea_ratio <- lapply(1:nrow(Include_or_not),
+                   function(i,Include_or_not,all_predictors){
+                  paste(c("sqrt(juv_yoy_ratio)~(1|year)",
+                          all_predictors[Include_or_not[i,]]),collapse = "+")
+},Include_or_not,all_predictors)
+
+formulea_ratio_none <- lapply(1:nrow(Include_or_not),
+                   function(i,Include_or_not,all_predictors){
+                  paste(c("sqrt(juv_yoy_ratio)~1",
+                          all_predictors[Include_or_not[i,]]),collapse = "+")
+},Include_or_not,all_predictors)
+
+ratio_all_lms <- lapply(formulea_ratio,lmer,data = walleye_reduced_data[walleye_reduced_data$yoy_per_meter>0 & walleye_reduced_data$clarity!="Very Low",])
+ratio_AICs <- sapply(ratio_all_lms,AIC)
+ratio_least_aic <- which(ratio_AICs==min(ratio_AICs))
+ratio_least_aic_model <- ratio_all_lms[[ratio_least_aic]]
+
+ratio_all_lms_none <- lapply(formulea_ratio_none,lm,data = walleye_reduced_data[walleye_reduced_data$yoy_per_meter>0 & walleye_reduced_data$clarity!="Very Low",])
+ratio_AICs_none <- sapply(ratio_all_lms_none,AIC)
+ratio_least_aic_none <- which(ratio_AICs_none==min(ratio_AICs_none))
+ratio_least_aic_model_none <- ratio_all_lms_none[[ratio_least_aic_none]]
+
+
+```
+
+```{r juv models , echo=FALSE,warning=FALSE,message=FALSE,error=FALSE, fig.height=6, fig.width=6}
+walleye_reduced_data$juv_per_meter <- walleye$juv_catch/walleye$meters_surv
+
+formulea_juv_year <- lapply(1:nrow(Include_or_not),
+                   function(i,Include_or_not,all_predictors){
+                  paste(c("sqrt(juv_per_meter)~(1|year)",
+                          all_predictors[Include_or_not[i,]]),collapse = "+")
+},Include_or_not,all_predictors)
+
+
+formulea_juv_none <- lapply(1:nrow(Include_or_not),
+                   function(i,Include_or_not,all_predictors){
+                  paste(c("sqrt(juv_per_meter)~1",
+                          all_predictors[Include_or_not[i,]]),collapse = "+")
+},Include_or_not,all_predictors)
+
+
+
+juv_all_lms_year <- lapply(formulea_year,lmer,data = walleye_reduced_data[walleye_reduced_data$clarity!="Very Low",])
+
+juv_all_lms_none <- lapply(formulea_none,lm,data = walleye_reduced_data[walleye_reduced_data$clarity!="Very Low",])
+
+juv_AICs_year <- sapply(juv_all_lms_year,AIC)
+juv_AICs_none <- sapply(juv_all_lms_none,AIC)
+
+
+juv_least_aic_year <- which(juv_AICs_year==min(juv_AICs_year))
+juv_least_aic_model_year <- juv_all_lms_year[[juv_least_aic_year]]
+
+juv_least_aic_none <- which(juv_AICs_none==min(juv_AICs_none)) # least AIC was ths
+juv_least_aic_model_none <- juv_all_lms_none[[juv_least_aic_none]]
+```
+
+
+```{r yoy summary table , echo=FALSE,warning=FALSE,message=FALSE,error=FALSE, fig.height=6, fig.width=6}
+
+
+summary_table_yoy <- summary(yoy_least_aic_model_year)
+
+pointest <- coef(summary_table_yoy)[,1]
+
+yoy_randomeff <-( summary_table_yoy$varcor)
+
+yoy_confint <- confint(yoy_least_aic_model_year)
+
+pointest <- c(attr(yoy_randomeff[[1]],"stddev"),attr(yoy_randomeff,"sc"),pointest)
+
+yoy_confint = data.frame(point = pointest,yoy_confint)
+
+rownames(yoy_confint) <- c("$\\sigma_{year}$","$\\sigma$","Intercept","size")
+colnames(yoy_confint) <- c("point","0.95 low","0.95 high")
+
+knitr::kable(yoy_confint,caption = "Parameter estimation of the least AIC model for year of the young density",digits = 3, booktabs = TRUE,escape = F)
+
+```
+
+```{r juv summary table , echo=FALSE,warning=FALSE,message=FALSE,error=FALSE, fig.height=6, fig.width=6}
+
+summary_table_juv <- summary(juv_least_aic_model_none)
+
+juv_confint <- data.frame( point = summary_table_juv$coefficients[,1],confint(juv_least_aic_model_none))
+rownames(juv_confint) <- c("Intercept","temprature survey","size")
+colnames(juv_confint) <- c("point","0.95 low","0.95 high")
+
+
+
+knitr::kable(juv_confint,caption = "Parameter estimation of the least AIC model for juvenile density",digits = 3, booktabs = TRUE,escape = F,longtable = F)
+
+```
+
+\pagebreak
+
+```{r ratio summary table , echo=FALSE,warning=FALSE,message=FALSE,error=FALSE, fig.height=6, fig.width=6}
+
+
+summary_table_ratio <- summary(ratio_least_aic_model_none)
+
+ratio_confint <- data.frame( point = summary_table_ratio$coefficients[,1],confint(ratio_least_aic_model_none))
+rownames(ratio_confint) <- c("Intercept","size","ice duration")
+colnames(ratio_confint) <- c("point","0.95 low","0.95 high")
+
+
+
+knitr::kable(ratio_confint,caption = "Parameter estimation of the least AIC model for juvenile/year of the young ratio",digits = 3, booktabs = TRUE,escape = F,longtable = F)
+
+```
+
+   
+## Predicting Recruitment Success
+
+The least AIC model had tempture survey, size and ice duration as its predictor. Recruitment success probability showed a positive relationship with lake size a positive relationship with temperture survey and a negative relationship with ice duration (Table.4). 10-fold cross validation with ROC-AUC valued showed a moderate power of prediction, average AUC was 0.721 with sd 0.096 (Fig.3). We may need more predictors to predict the success of recruitment.
+
+
+```{r recruitment success , echo=FALSE,warning=FALSE,message=FALSE,error=FALSE, fig.height=6, fig.width=6}
+walleye_reduced_data_succ <- walleye[,-c(1:5,7,8,16)] 
+walleye_reduced_data_succ$succ <- walleye$yoy_per_meter>=0.0062
+walleye_reduced_data_succ <- walleye_reduced_data_succ[walleye_reduced_data_succ$clarity!="Very Low",] %>% na.omit()
+#yoy_full <- lm(sqrt(yoy_per_meter)~.,data = walleye_reduced_data)
+
+cont_pred <- c("temp_survey","size_acre",#"year",
+               "max_depth_m","Secchi_satellite" ,
+               "Conductance","gdd_wtr_5c","ice_duration_days")
+
+walleye_reduced_data_succ[,cont_pred] <- lapply(walleye_reduced_data_succ[,cont_pred],function(w) (w-mean(w,na.rm=T))/sd(w,na.rm = T))
+
+
+Include_or_not <-   do.call(expand.grid,lapply(1:(ncol(walleye_reduced_data_succ)-1),function(x)c(FALSE,TRUE))) %>% as.matrix()
+
+all_predictors <- colnames(walleye_reduced_data_succ)[-10]
+
+formulea_succ <- lapply(1:nrow(Include_or_not),
+                   function(i,Include_or_not,all_predictors){
+                  paste(c("succ~1",
+                          all_predictors[Include_or_not[i,]]),collapse = "+")
+},Include_or_not,all_predictors)
+
+
+suc_all_glms <- lapply(formulea_succ,glm,data = walleye_reduced_data_succ,family=binomial())
+suc_AICs <- sapply(suc_all_glms,AIC)
+suc_least_aic <- which(suc_AICs==min(suc_AICs))
+
+suc_least_aic_model <- suc_all_glms[[suc_least_aic]]
+
+ROC_cv_suc_least_aic <- CV_glm(suc_least_aic_model,10)$ROC
+
+
+auc_cv_suc <- sapply(ROC_cv_suc_least_aic,function(w) w$auc)
+
+coef_table_leastaic <- summary((suc_least_aic_model))$coefficients 
+
+knitr::kable(coef_table_leastaic,caption = "Summary table of the predictive model for recuitment success",digits = 3,booktabs = TRUE,longtable = F)
+
+```
+
+\pagebreak
+
+```{r plotROC,echo=FALSE, error=FALSE, fig.cap=paste("10-fold corss validation of least AIC model of recruitment success"), fig.height=3, fig.width=3, message=FALSE, warning=FALSE}
+ggroc(ROC_cv_suc_least_aic,aes="linetype", color="black") +
+   theme(legend.position="none",text = element_text(size=14))+  
+   geom_segment(aes(x = 1, xend = 0, y = 0, yend = 1), color="grey", linetype="dashed")+
+   ggtitle("")+
+   annotate("text", x=0.25, y=0.125, label= paste0("mean AUC=", signif( mean(auc_cv_suc),3),"\nSD=",signif(sd(auc_cv_suc),3)),size = 3.5)
+```
+
+
+# Discussion
+
+## Trend of Recruitment in Lake Surveyed
+
+We did not detect strong decline trend in YOY/juvenile density of walleye in the lake surveyed. There were yearly fluctuation of recruitment according to our analysis in the sencond part but probably not a yearly trend. State wide average of measurements showed no strong temperal auto correlation was partially due to the average process. We need to track certain lake for a continuous time as cohort analysis to better assess the trend. Since we obseved decline in population of this species, we need to consider other part of the population dynamics. If assuming lakes were closed system without migration and dispersal, population dynamics dependends on two main factors, recruitment and survival. Since the recruitment of YOY did not change much through time, so do survival from YOY to juvenile according to the data we have. We may consider the reason of observed decline in game harvest being survival from juvenile to muture individuals. 
+
+We also need to assess the trend of muture populations to see if the population was indeed declining. Again mark-recapture survival survey on YOY and juvenile cohort on several model lakes should also be conducted to confirm whether survival of YOY was indeed stationary. 
+
+## Variability for Recuitment 
+
+The least AIC model for raw YOY density had a relative large residual variance and variance on year as a random effect. This agree with our prior knowledge that recruitment of fish in general had large annual fluctuations. However water body characteristics we measured were not able to fully predict the fluctuations. Lake size was a predictor used in the model with least AIC, this may not because of a simple scaling effect because we normalized catch by distance survey, thus the response was a measure of YOY density rather than absolute abundance, i.e. our results showed density was positively related with lake size. However, the relationship between density and catch per meter may not be linear at first place. Actually Hansen et al. (2004) proposed an empirical log linear formula for density and catch per mile. In their formula true density was proportional to the 1.56th power of catch per mile. However the residual distribution after this transformation was not enough stableized (see appendix). Since square root was monotonic, the transformed catch per mile was still a good index of density.
+
+This positive correlation may be partialy understand by considering the trophical level of walleye. Walleye was typically carnivour using other fish species as diet (Kelling, et al. 2016). Females need enough good body conditions to reproduce. A larger lake may be more likely able to offer resources for this type of carnivour fish species. It was known that wave on the lake can negatively impact egg survival of walleye (Bozek et al. 2011), in which smaller lakes were more impacted by wind. Hatching relied on shoreline spawning reefs (Bozek et al. 2011) which was rarer in realtively small lakes. Some lake relies on stocking for recruitment i.e. non-natural recruitment (Cichosz 2018). However, our dataset did not distinguish sources of recruitment. Further analysis on different type of recruitment should be conducted to understand variability of recruitment.
+
+Least AIC model for juvenile density showed a positive relationship between juvenile catch per meter and temperature as well as lake size. Lake size may be because of larger size had more year of the young which later become juvenile. This arguement was also supported by the ratio analysis as lake size was not used by least AIC model. Tempture at survey was more a behaviour factor for juvenile, which suggested that a better control was needed to have accurate estimate of true or at least compareanle density estimates.
+
+The least AIC model for juvenile YOY ratio had predictor of size and ice duration. Interestingly ice duration was positively correlated with juvenile YOY ratio. This may becase some interspecific interactions during the winter and ice duration helped walleye to survive. This measure was good index for YOY survival only under the assumption that population was not changing over time for a certain lake conditions which was possibly valid according to our result in the first section, however, further evaluation on adult part of the population need to be assessed. The least AIC model had pretty poor predicting power. Further environmental survey was needed to find posible better predictors. Another source of variation can be due to the fact that classification of juvenile was based on size rather than real age. Years take for a YOY to become a juvenile was not fixed, because of this juvenile of this year can be YOY of the past several years and solely use this year's environment predictors may not be able to account for the annual fluctuation of YOY survival that cannot be simply accounted by using year as randon intercept. 
+
+
+## Predictive model of Recuitment Success
+
+In this part, we reduced the variability by setting a threshold and transform a continuous response to a discrete one. Turns out we can construct useful model to predict this response from predictors we measured. The preidctive model had tempture survey, lake size and ice duration as predictor, however ice duration was not significant in the model. Tempture at survey influent the activity level of fish that may influent our survey result and size was consistent with our finding above. It may be used in some management process in determin harvest limit of certain lakes.
+
+
+
+
+
+
+# References
+
+Bozek, Michael A., Dominic A. Baccante, and NIGEL P. Lester. "Walleye and sauger life history." Biology, management, and culture of Walleye and Sauger 233 (2011): 301.
+
+Cichosz, Thomas A. "Wisconsin Department of Natural Resources 2016-2017 Ceded Territory Fishery Assessment Report." Wisconsin Department of Natural Resources. Administrative Report 88 (2018).
+
+Kelling, Craig J., et al. "Diet overlap and predation between largemouth bass and walleye in Wisconsin lakes using DNA barcoding to improve taxonomic resolution." North American Journal of Fisheries Management 36.3 (2016): 621-629.
+
+Hansen, Michael J., Steven P. Newman, and Clayton J. Edwards. "A reexamination of the relationship between electrofishing catch rate and age-0 walleye density in northern Wisconsin lakes." North American Journal of Fisheries Management 24.2 (2004): 429-439.
+
+Hansen, Gretchen JA, et al. "Predicting walleye recruitment as a tool for prioritizing management actions." Canadian Journal of Fisheries and Aquatic Sciences 72.5 (2015): 661-672.
+
+
+\pagebreak
+
+# Appendix
+
+## CV function for glm
+
+```{r CV function echo, echo=TRUE, warning=FALSE,message=FALSE,error=FALSE, fig.height=3, fig.width=5.5}
+CV_glm = function(obj,fold){
+   require(caret)
+   require(pROC)
+   formular = formula(obj)
+   response = as.character( formular[[2]])
+   data_ =  obj$data # get the data
+   rownames(data_) <- NULL
+   family_ = family(obj)[[1]] # get family
+   
+   folds = createFolds(y=data_[,response]
+                       ,k=fold) # create a fold
+   
+   
+   retrain = lapply(1:fold,function(i,folds,
+                                    formular,
+                                    data_,
+                                    response,
+                                    family_){
+                              #start ith cross validation 
+      
+                              # train with training set:      
+                              retrained_model = glm(formular,
+                                    data = data_[-folds[[i]],],
+                                    family = family_) 
+                              
+                              
+                              # predict the testing:
+                              pred_retrain = predict(retrained_model,
+                              newdata = data_[folds[[i]],],
+                              type = "response")
+                              roc_data = 
+                                 data.frame(resp =
+                                               data_[folds[[i]],response],
+                                            pred = pred_retrain)
+
+                              # return the retrained model and prediction:
+                              return(list(
+                                 model = retrained_model,
+                                 roc_data=roc_data)) 
+               },folds,formular,data_,response,family_) # end the lapply
+   
+    ## do ROC
+    roc_res = lapply(retrain,function(w){
+                              roc(w$roc_data,
+                                  response = "resp",
+                                  predictor = "pred")
+       }) # get ROC using the test sample
+   
+   return(list(ROC=roc_res,models = retrain)) # return result
+}
+
+```
+
+\pagebreak
+## Residual plot for yoy-lake characteristic model 
+
+We hereby showed the residual plot in the yoy-lake characteristic model (in part II) with least AIC value using square root tansformation and density follow Hansens et al. 2004 as response.
+
+```{r residual sqrt, echo=FALSE, error=FALSE, fig.cap=paste("Residual plot using square root transformation and Hansens et al. 2004 formula"), fig.height=2.5, fig.width=3.5, message=FALSE, warning=FALSE}
+yoy_least_aic_model_year_den <- lmer(yoy_per_meter^1.564~(1|year)+size_acre,data = walleye_reduced_data[walleye_reduced_data$clarity!="Very Low",])
+
+
+
+sqrt_res <- plot(yoy_least_aic_model_year,main = "sqrare root")
+den_res <- plot(yoy_least_aic_model_year_den,main="Hansens et al.")
+
+plot(sqrt_res)
+plot(den_res)
+
+```
